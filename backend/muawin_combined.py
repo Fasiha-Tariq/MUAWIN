@@ -49,38 +49,204 @@ def split_request(request: str) -> Tuple[str, str]:
 
 
 def clean_source(source: Dict) -> Dict:
-    """'from the uploaded lecture' / 'from this lecture' = the lecture being uploaded."""
+    """Mark references to the current lecture as the lecture being uploaded."""
+    source = source or {"week": None, "lecture": None, "name": None}
     name = source.get("name")
     if name and set(asg.norm_text(name).split()) <= SAME_LECTURE_WORDS:
-        return {"week": None, "lecture": None, "name": None}
+        return {"uploaded": True}
     return source
 
 
-def parse_combined(request: str) -> Tuple[Dict, Optional[Dict]]:
-    """Returns (lecture_job, assignment_job or None). Raises ValueError."""
+
+
+def _parse_combined_lecture_job(lecture_request: str, selected_course: Optional[str]) -> Dict:
+    """Resolve arbitrary lecture/file names without requiring 'Lecture N'.
+
+    The selected course comes from the UI. A week is taken from an explicit
+    Week N, a numbered lecture identity, or a clearly stated ordinal. If the
+    destination week cannot be established, ask rather than guessing.
+    """
+    text = lec.clean_text(lecture_request or "")
+    try:
+        parsed = lec.parse_request(text)
+        if parsed.get("lecture") and parsed.get("lecture") != "Lecture Material":
+            if not parsed.get("course") and selected_course:
+                parsed["course"] = selected_course.strip()
+            return parsed
+    except Exception:
+        parsed = None
+
+    week_match = list(re.finditer(r"\bweek\s*(\d+)\b", text, re.I))
+    lecture_match = re.search(r"\b(?:lecture|lec)\s*(\d+)\b", text, re.I)
+    ordinal_map = {
+        "first": 1, "1st": 1, "pehla": 1, "pehli": 1,
+        "second": 2, "2nd": 2, "dosra": 2, "doosra": 2,
+        "third": 3, "3rd": 3, "teesra": 3,
+        "fourth": 4, "4th": 4, "chautha": 4,
+        "fifth": 5, "5th": 5, "paanchwa": 5,
+    }
+    ordinal_match = re.search(r"\b(first|1st|pehla|pehli|second|2nd|dosra|doosra|third|3rd|teesra|fourth|4th|chautha|fifth|5th|paanchwa)\b", text, re.I)
+    if week_match:
+        week = int(week_match[-1].group(1))
+    elif lecture_match:
+        week = int(lecture_match.group(1))
+    elif ordinal_match:
+        week = ordinal_map[ordinal_match.group(1).lower()]
+    else:
+        week = None
+
+    quoted = re.search(r'["\']([^"\']{2,})["\']', text)
+    filename = re.search(r"([^\s\"']+\.(?:pdf|pptx?|docx?|txt))\b", text, re.I)
+    if lecture_match is None and ordinal_match:
+        lecture_name = f"Lecture {week}"
+    elif quoted:
+        lecture_name = quoted.group(1).strip()
+    elif filename:
+        lecture_name = filename.group(1).strip()
+    else:
+        # Remove task wording and destination/deadline clauses, preserving the
+        # teacher's own lecture/topic wording for course-folder matching.
+        lecture_name = re.sub(
+            r"\b(?:please|kindly|upload|add|put|post|share|send|attach|select|"
+            r"lecture|material|file|slides?|my|the|this|that|meri|mera|yeh|is|"
+            r"ko|karo|kar|do|dein|day|do|week|hafta|mein|me|to|into|on)\b",
+            " ", text, flags=re.I,
+        )
+        lecture_name = re.sub(r"\b\d+\b", " ", lecture_name)
+        lecture_name = re.sub(r"\s+", " ", lecture_name).strip(" .,:;-_")
+
+    lecture_name = re.sub(r"\.(?:pdf|pptx?|docx?|txt)$", "", lecture_name, flags=re.I).strip()
+    if not lecture_name or lecture_name.casefold() in {"lecture", "material", "file", "slides"}:
+        raise ValueError("Which lecture or file should I find in this course's saved folder?")
+    if not week:
+        raise ValueError(f"I identified '{lecture_name}', but its destination week is unclear. Which week should I use?")
+    if not selected_course:
+        raise ValueError("Please select a course in MUAWIN before preparing the combined workflow.")
+    return {"course": selected_course.strip(), "week": int(week), "lecture": lecture_name, "heading": None}
+
+
+def _combined_submission_deadline(request: str):
+    """Parse an absolute deadline or a relative student-submission duration."""
+    from datetime import datetime, timedelta
+
+    text = str(request or "")
+    # Natural English: "Give students 5 days to submit" / "5 days for submission".
+    relative = re.search(
+        r"\b(\d{1,3})\s*(?:days?|d|din)\s*(?:to\s+submit|for\s+submission|"
+        r"to\s+hand\s+in|ki\s+deadline|ki\s+submission)\b",
+        text,
+        re.IGNORECASE,
+    )
+    if relative:
+        due = datetime.now() + timedelta(days=int(relative.group(1)))
+        return due.replace(hour=23, minute=59, second=0, microsecond=0)
+
+    # Roman Urdu variants such as "deadline 5 din ki rakhna" are handled by
+    # the existing parser; prefixing "Deadline" also handles a short reply.
+    due = asg.parse_deadline(text)
+    if due is None:
+        due = asg.parse_deadline("Deadline: " + text)
+    return due
+
+
+def _choose_combined_marks(lecture_text: str) -> int:
+    """Ask the configured AI for suitable marks; use a content-based fallback."""
+    try:
+        from . import muawin_ai
+        if muawin_ai.llm_ready() and __import__("os").getenv("MUAWIN_LLM_QUESTIONS", "1") != "0":
+            data = muawin_ai.gemini_json(
+                "Choose a fair total-mark value for a university assignment based "
+                "only on the depth, breadth, and complexity of this lecture. "
+                "Return JSON only: {\"total_marks\": integer}. Choose an integer "
+                "from 10 to 30, preferably a multiple of 5. Do not generate questions.\n\n"
+                + asg.clean_text(lecture_text)[:12000],
+                "You are a university assessment designer. Select a proportionate, "
+                "fair assignment mark total; do not assume a fixed default.",
+                timeout=30,
+            )
+            value = int(data.get("total_marks")) if isinstance(data, dict) else 0
+            if 10 <= value <= 30:
+                return value
+    except Exception as exc:
+        print(f"[COMBINED] AI marks selection unavailable; using content-based fallback: {exc}")
+
+    concepts = len(asg.select_distinct_concepts(asg.clean_text(lecture_text)))
+    # 2-4 concepts -> 10; 5-6 -> 15; 7-8 -> 20; 9-10 -> 25; 11+ -> 30.
+    return max(10, min(30, 5 * ((max(2, concepts) + 1) // 2)))
+
+
+def parse_combined(
+    request: str,
+    selected_course: Optional[str] = None,
+) -> Tuple[Dict, Optional[Dict]]:
+    """Parse a lecture upload and, optionally, an assignment generated from it."""
     lecture_part, assign_part = split_request(request)
-    lecture_job = lec.parse_request(lecture_part)
+    lecture_job = _parse_combined_lecture_job(lecture_part, selected_course)
+
+    lecture_name = str(lecture_job.get("lecture") or "").strip()
+    if not lecture_name or lecture_name.casefold() in {
+        "lecture material", "material", "lecture", "file"
+    }:
+        raise ValueError(
+            "Which lecture or file should I upload? Please provide its name "
+            "(for example, Lecture 1) and try again."
+        )
+
+    if not lecture_job.get("course") and selected_course:
+        lecture_job["course"] = selected_course.strip()
+    if not lecture_job.get("course"):
+        raise ValueError("Selected course was not provided by the interface.")
+
+    # Lecture number is the default destination week; an explicit lecture week
+    # parsed by muawin_lecture remains an override.
+    week = lecture_job.get("week")
+    if not week:
+        match = re.search(r"\b(?:lecture|lec)\s*(\d+)\b", lecture_name, re.IGNORECASE)
+        if not match:
+            match = re.search(r"\b(?:lecture|lec)\s*(\d+)\b", request, re.IGNORECASE)
+        if match:
+            week = int(match.group(1))
+            lecture_job["week"] = week
+    if not week:
+        raise ValueError(
+            "Which lecture number should I use? For example, Lecture 4 maps to Week 4."
+        )
+
     if not assign_part:
         return lecture_job, None
 
-    week = lecture_job["week"]
     title = asg.parse_title(assign_part)
-    if not title:  # reviewable default
-        title = f"{lec.pretty_heading(lecture_job.get('heading') or lecture_job['lecture'])} Assignment"
+    if not title:
+        title = (
+            f"{lec.pretty_heading(lecture_job.get('heading') or lecture_name)} "
+            "Assignment"
+        )
+
+    marks = asg.parse_marks(assign_part)
+    deadline = _combined_submission_deadline(request)
+    question_types = asg.parse_question_types(assign_part) or None
+
+    # Combined always generates a fresh assignment from the lecture file being
+    # uploaded. It never searches for or attaches a pre-existing assignment.
     job = {
+        "mode": "generate",
         "course": lecture_job["course"],
-        "week": week,
-        "section": f"Week {week}",
+        "week": int(week),
+        "section": f"Week {int(week)}",
         "title": title,
-        "max_grade": asg.parse_marks(assign_part),
-        "duedate": asg.parse_deadline(assign_part),
-        "question_types": asg.parse_question_types(assign_part),
-        "source": clean_source(asg.parse_source(assign_part)),
+        "max_grade": marks,
+        "duedate": deadline,
+        "question_types": question_types,
+        "source": {"uploaded": True},
         "raw_request": assign_part,
     }
-    asg.validate_parsed_request(job)
-    return lecture_job, job
 
+    # Keep shared validation (including past-date rejection), but undo its
+    # standalone 20-mark default so Combined can choose marks from the lecture.
+    asg.validate_parsed_request(job)
+    if marks is None:
+        job["max_grade"] = None
+    return lecture_job, job
 
 def describe_questions_source(job: Dict) -> str:
     src = job["source"]
@@ -108,37 +274,57 @@ def local_lecture_text(file_path: Path) -> str:
 
 def build_assignment_draft(job: Dict, lecture_text: str, source_label: str,
                            course_name: str) -> Dict:
-    questions = asg.generate_assignment(
-        lecture_content=lecture_text,
-        total_marks=job["max_grade"],
-        question_types=job["question_types"],
-    )
+    # Marks explicitly supplied by the teacher always win. Otherwise choose a
+    # content-proportionate total using the configured AI, with a safe fallback.
+    if job.get("max_grade") is None:
+        job["max_grade"] = _choose_combined_marks(lecture_text)
+
+    if job.get("question_types"):
+        # If the teacher explicitly requested question types/counts, honor them.
+        questions = asg.generate_assignment(
+            lecture_content=lecture_text,
+            total_marks=job["max_grade"],
+            question_types=job["question_types"],
+        )
+    else:
+        # Otherwise Gemini (when configured) or the content-based fallback
+        # chooses a suitable count and mix from short/long/scenario/practical.
+        questions = asg.generate_simple_assignment(
+            lecture_content=lecture_text,
+            total_marks=job["max_grade"],
+            question_types=None,
+        )
+    job["question_types"] = asg.question_type_counts(questions)
+
     if sum(q.marks for q in questions) != job["max_grade"]:
-        raise RuntimeError("Generated marks do not match the requested total marks.")
+        raise RuntimeError("Generated marks do not match the selected total marks.")
 
     warnings: List[str] = []
     if len(lecture_text) < 1500:
-        warnings.append(f"Lecture text is very short ({len(lecture_text)} characters). It may be "
-                        "only a cover page or scanned slides, so the questions can be weak.")
+        warnings.append(
+            f"Lecture text is very short ({len(lecture_text)} characters). "
+            "Questions may be limited by the available material."
+        )
     if len(asg.extract_concepts(lecture_text)) < sum(job["question_types"].values()):
-        warnings.append("The lecture has fewer distinct topics than questions, "
-                        "so topics will repeat.")
+        warnings.append("The lecture has fewer distinct topics than questions, so topics may repeat.")
 
     draft = {
         "warnings": warnings,
         "course": course_name,
-        "week_number": job["week"],
+        "week_number": int(job["week"]),
         "title": job["title"],
         "max_grade": job["max_grade"],
         "duedate": job["duedate"],
+        "include_deadline_in_pdf": False,
         "question_types": job["question_types"],
         "questions": questions,
         "source_label": source_label,
         "description": asg.short_description(job["max_grade"]),
     }
     draft["pdf_path"] = asg.make_assignment_pdf(draft)
-    print(f"✓ Assignment PDF created: {draft['pdf_path']}")
+    print(f"Assignment PDF created without a submission deadline: {draft['pdf_path']}")
     return draft
+
 
 
 # ============================================================
@@ -153,7 +339,7 @@ def combined_review(course: str, week: int, file_name: str, others: int,
         print("TEACHER REVIEW - lecture + assignment (ek hi approval)")
         lec.divider()
         if week_note:
-            print(f"⚠ {week_note}")
+            print(f"âš  {week_note}")
         print(f"Course        : {course}")
         print(f"Week          : {week}")
         print()
@@ -173,7 +359,7 @@ def combined_review(course: str, week: int, file_name: str, others: int,
         print(f"    Questions from : {assign_draft['source_label']}")
         print(f"    PDF preview : {assign_draft['pdf_path']}")
         for w in assign_draft.get("warnings", []):
-            print(f"    ⚠ WARNING   : {w}")
+            print(f"    âš  WARNING   : {w}")
         print()
         lec.divider()
         print(asg.questions_to_text(assign_draft["questions"]))
@@ -217,13 +403,13 @@ def dry_run(lecture_job: Dict, job: Optional[Dict], lecture_file: Optional[str])
         text = local_lecture_text(Path(lecture_file))
         demo = build_assignment_draft(job, text, Path(lecture_file).name, job["course"])
     except Exception as exc:
-        print(f"\n✗ {exc}")
+        print(f"\nâœ— {exc}")
         return 1
     print()
     lec.divider()
     print(asg.questions_to_text(demo["questions"]))
     lec.divider()
-    print(f"✓ PDF created: {demo['pdf_path']}")
+    print(f"âœ“ PDF created: {demo['pdf_path']}")
     return 0
 
 
@@ -260,10 +446,10 @@ def main() -> int:
     try:
         lecture_job, job = parse_combined(request)
     except ValueError as exc:
-        print(f"\n✗ {exc}")
+        print(f"\nâœ— {exc}")
         return 1
 
-    print("\n✓ Request understood")
+    print("\nâœ“ Request understood")
     print(f"  Course      : {lecture_job['course']}")
     print(f"  Week        : {lecture_job['week']}")
     print(f"  Lecture     : {lecture_job['lecture']}"
@@ -281,15 +467,15 @@ def main() -> int:
         return dry_run(lecture_job, job, args.lecture_file)
 
     if sync_playwright is None:
-        print("\n✗ Playwright is not installed. Run:\n"
+        print("\nâœ— Playwright is not installed. Run:\n"
               "   python -m pip install playwright python-dotenv pypdf reportlab\n"
               "   python -m playwright install chromium")
         return 1
     if not (lec.MOELLIM_USERNAME and lec.MOELLIM_PASSWORD):
         print(f"\nERROR: Moellim username/password .env mein nahi mile: {lec.ENV_FILE}")
         return 1
-    
-    lec.HEADLESS = True
+    if args.headless:
+        lec.HEADLESS = True
 
     log: Dict = {"request": request, "workflow": "combined", **lecture_job}
     if job:
@@ -308,7 +494,7 @@ def main() -> int:
             # ---------- login / course / week (ONE session for both) ----------
             moodle.login()
             course = moodle.discover_course(lecture_job["course"])
-            print(f"\n✓ Matched course: {course['name']}")
+            print(f"\nâœ“ Matched course: {course['name']}")
             log["course_matched"] = course["name"]
             course_id = asg.extract_course_id(course["href"])
             moodle.open_course(course)
@@ -391,7 +577,7 @@ def main() -> int:
                 log["status"] = "rejected"
                 lec.log_activity(log)
                 return 1
-            print("\n✓ Teacher approved.")
+            print("\nâœ“ Teacher approved.")
 
             # ---------- STEP A: upload the lecture ----------
             print("\n[8] Uploading lecture to Moellim...")
@@ -402,7 +588,7 @@ def main() -> int:
                                    "Assignment was NOT created.")
             log["heading"] = lecture_draft["heading"]
             log["lecture_status"] = "success"
-            print("\n✓ LECTURE UPLOADED + VERIFIED")
+            print("\nâœ“ LECTURE UPLOADED + VERIFIED")
 
             if not job:
                 log["status"] = "success"
@@ -469,7 +655,7 @@ def main() -> int:
             print(f"Lecture    : {lecture_draft['heading']}  ({file_path.name})")
             print(f"Assignment : {assign_draft['title']}  |  {assign_draft['max_grade']} marks  |  "
                   f"{asg.fmt_due(assign_draft['duedate'])}")
-            print("\n✓ Lecture uploaded + verified\n✓ Assignment created + verified "
+            print("\nâœ“ Lecture uploaded + verified\nâœ“ Assignment created + verified "
                   "(grade, deadline, PDF, same week)")
             print(f"Result saved to: {saved}")
             log["assignment_status"] = "success"
@@ -499,6 +685,10 @@ def main() -> int:
             return 130
         finally:
             print("\nBrowser automation finished.")
+            if status != 0 and log.get("status") in ("failed", "partial"):
+                input("Press ENTER to close browser...")
+            else:
+                lec.pause(4)
             try:
                 browser.close()
             except Exception:
