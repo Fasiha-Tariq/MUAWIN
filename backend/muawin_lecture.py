@@ -85,7 +85,7 @@ MOELLIM_BASE_URL = os.getenv(
 ).rstrip("/")
 MOELLIM_USERNAME = os.getenv("MOELLIM_USERNAME", "")
 MOELLIM_PASSWORD = os.getenv("MOELLIM_PASSWORD", "")
-HEADLESS = True
+HEADLESS = False
 
 
 # ============================================================
@@ -150,7 +150,7 @@ def log_activity(entry):
     entry = {"time": datetime.now().isoformat(timespec="seconds"), **entry}
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    print(f"✓ Activity logged: {LOG_FILE.name}")
+    print(f"Ã¢Å“â€œ Activity logged: {LOG_FILE.name}")
 
 
 # ============================================================
@@ -159,69 +159,92 @@ def log_activity(entry):
 def parse_request(request):
     request = clean_text(request)
 
-    # Optional heading:  Upload lecture_test as Lecture 2 to CS7 MUAWIN Week 7
-    #                    Upload Lecture 2 as "Introduction to Networks" to ...
+    # Optional teacher-provided heading.
     heading = None
     quoted = re.search(
-        r"\s+(?:as|titled|named|called)\s+[\"\u201c']([^\"\u201d']+)[\"\u201d']",
-        request, re.IGNORECASE,
+        r'\s+(?:as|titled|named|called)\s+["?\']([^"?\']+)["?\']',
+        request,
+        re.IGNORECASE,
     )
     plain = re.search(
-        r"\s+(?:as|titled|named|called)\s+(.+?)(?=\s+(?:to|into)\s+)",
-        request, re.IGNORECASE,
+        r'\s+(?:as|titled|named|called)\s+(.+?)(?=\s+(?:to|into)\s+)',
+        request,
+        re.IGNORECASE,
     )
     heading_match = quoted or plain
     if heading_match:
         heading = clean_text(heading_match.group(1))
         request = clean_text(
-            request[: heading_match.start()] + request[heading_match.end():]
+            request[:heading_match.start()] + request[heading_match.end():]
         )
 
-    # the LAST "Week N" is the target week (file names may contain "Week2")
-    week_matches = list(re.finditer(r"\bweek\s*(\d+)\b", request, re.IGNORECASE))
+    # Explicit week always wins. Otherwise Lecture N defaults to Week N.
+    week_matches = list(
+        re.finditer(r"\bweek\s*(\d+)\b", request, re.IGNORECASE)
+    )
     week_match = week_matches[-1] if week_matches else None
-    if not week_match:
-        raise ValueError("Request mein Week number nahi mila.")
-    week_number = int(week_match.group(1))
 
-    # Lecture
-    lecture_match = re.search(
-        r"\b(?:lecture|lec)\s*\d+(?:\s+[^,]+?)??"
-        r"(?=\s+to\s+|\s+into\s+|\s+week\s+|$)",
+    lecture_number_match = re.search(
+        r"\b(?:lecture|lec)\s*(\d+)\b",
         request,
         re.IGNORECASE,
     )
-    if lecture_match:
-        lecture_name = clean_text(lecture_match.group(0))
+
+    if week_match:
+        week_number = int(week_match.group(1))
+    elif lecture_number_match:
+        week_number = int(lecture_number_match.group(1))
     else:
-        # e.g. "Upload PDC-Week2-1.pdf to CS7 MUAWIN Week 3"
+        raise ValueError(
+            "Lecture/week number nahi mila. Example: Lecture 2 upload karo."
+        )
+
+    # Keep numbered lecture identity clean for matching course-folder files.
+    if lecture_number_match:
+        lecture_name = f"Lecture {lecture_number_match.group(1)}"
+    else:
+        # Legacy named-file command, e.g.:
+        # Upload Marketing_Chapter.pdf to CS7 MUAWIN Week 6
         named = re.match(
             r"^\s*(?:upload|add|put|post)\s+(.+?)\s+(?:to|into)\s+",
             request,
             re.IGNORECASE,
         )
-        lecture_name = clean_text(named.group(1)) if named else "Lecture Material"
+        lecture_name = (
+            clean_text(named.group(1))
+            if named else "Lecture Material"
+        )
 
-    # "Lecture 2 PDF" -> "Lecture 2",  "PDC-Week2-1.pdf" -> "PDC-Week2-1"
     lecture_name = re.sub(
-        r"(?:\s+(?:pdf|pptx?|docx?|slides?|file))+$", "", lecture_name,
+        r"(?:\s+(?:pdf|pptx?|docx?|slides?|file))+$",
+        "",
+        lecture_name,
         flags=re.IGNORECASE,
     )
     lecture_name = re.sub(
-        r"\.(?:pdf|pptx?|docx?)$", "", lecture_name, flags=re.IGNORECASE
+        r"\.(?:pdf|pptx?|docx?)$",
+        "",
+        lecture_name,
+        flags=re.IGNORECASE,
     ).strip() or "Lecture Material"
 
-    # Course
-    before_week = request[: week_match.start()].strip()
+    # Course is optional here; the selected course is supplied by the UI.
+    before_week = request[:week_match.start()].strip() if week_match else request
     course_match = re.search(
-        r"\b(?:to|into)\s+(.+?)\s*$", before_week, re.IGNORECASE
+        r"\b(?:to|into)\s+(.+?)\s*$",
+        before_week,
+        re.IGNORECASE,
     )
-    if not course_match:
-        raise ValueError("Course name parse nahi ho saka.")
-    course_name = clean_text(course_match.group(1))
-    course_name = re.sub(
-        r"\s+(?:lecture|lec)\s*\d+.*$", "", course_name, flags=re.IGNORECASE
-    ).strip()
+    course_name = clean_text(course_match.group(1)) if course_match else None
+
+    # Remove accidental lecture wording from a legacy course capture.
+    if course_name:
+        course_name = re.sub(
+            r"\s+(?:lecture|lec)\s*\d+.*$",
+            "",
+            course_name,
+            flags=re.IGNORECASE,
+        ).strip() or None
 
     return {
         "course": course_name,
@@ -231,7 +254,6 @@ def parse_request(request):
     }
 
 
-# ============================================================
 # MATERIAL SELECTION
 # ============================================================
 
@@ -278,27 +300,35 @@ def name_key(text):
 
 
 def match_rank(filename, lecture_name):
-    """How well does this file fit the request?
-    3 = same name, 2 = contains the name / same lecture number,
-    1 = has all the words (any order), 0 = no match."""
+    """Strictly match the requested lecture number or exact title."""
     f = name_key(Path(filename).stem)
     wanted = name_key(lecture_name)
+
     if not wanted or wanted == "lecture material":
         return 0
 
-    if f.replace(" ", "") == wanted.replace(" ", ""):
+    number = re.search(
+        rf"\b{LECTURE_WORDS}\s*0*(\d+)\b",
+        wanted,
+    )
+
+    if number:
+        requested_number = int(number.group(1))
+        found = re.search(
+            rf"\b{LECTURE_WORDS}\s*0*(\d+)\b",
+            f,
+        )
+        if not found or int(found.group(1)) != requested_number:
+            return 0
         return 3
 
-    number = re.match(rf"{LECTURE_WORDS}\s*0*(\d+)\b", wanted)
-    if number:  # "Lecture 2"  ~  Lecture2 / lec_02 / Lecture 2 Intro
-        found = re.search(
-            rf"\b{LECTURE_WORDS}\s*0*{number.group(1)}\b", f
-        )
-        return 2 if found else 0
+    if f == wanted:
+        return 3
 
     if wanted in f:
         return 2
-    return 1 if all(w in f for w in wanted.split()) else 0
+
+    return 0
 
 
 def lecture_matches(filename, lecture_name):
@@ -322,67 +352,116 @@ def search_folders():
     return folders
 
 
-def find_local_files(lecture_name, max_depth=3, max_entries=30000):
-    found, checked = [], 0
-    for folder in search_folders():
-        if not folder.exists():
+def find_local_files(lecture_name, max_depth=3, max_entries=30000, folder=None):
+    found, checked = [], []
+
+    folders = [Path(folder).expanduser()] if folder else search_folders()
+
+    if folder and not folders[0].is_dir():
+        raise FileNotFoundError(
+            f"Saved course lecture folder does not exist: {folders[0]}"
+        )
+
+    for base_folder in folders:
+        if not base_folder.is_dir():
             continue
-        base = len(folder.parts)
-        for root, dirs, files in os.walk(folder):
+
+        base = len(base_folder.parts)
+
+        for root, dirs, files in os.walk(base_folder):
             root_path = Path(root)
+
             if len(root_path.parts) - base >= max_depth:
                 dirs[:] = []
+
             dirs[:] = [
                 d for d in dirs
                 if d.lower() not in SKIP_DIRS and not d.startswith(".")
             ]
+
             if TEMP_DIR in root_path.parents or root_path == TEMP_DIR:
                 dirs[:] = []
                 continue
+
             for name in files:
-                checked += 1
-                if checked > max_entries:
+                checked.append(name)
+                if len(checked) > max_entries:
                     return found
+
                 if name.startswith("~$"):
                     continue
                 if Path(name).suffix.lower() not in ALLOWED_EXTENSIONS:
                     continue
+
                 if lecture_matches(name, lecture_name):
                     path = root_path / name
                     try:
-                        found.append(
-                            {
-                                "name": name,
-                                "source": "Computer",
-                                "path": path,
-                                "modified": path.stat().st_mtime,
-                            }
-                        )
+                        found.append({
+                            "name": name,
+                            "source": "Computer",
+                            "path": path,
+                            "modified": path.stat().st_mtime,
+                        })
                     except OSError:
                         pass
+
     return found
 
 
 def drive_service_silent():
-    """Google Drive WITHOUT any login popup (only if token.json exists)."""
-    token_file = BASE_DIR / "token.json"
+    """Return an authenticated Drive service, refreshing token when possible.
+
+    OAuth files are deliberately kept in backend/. Never log token contents.
+    """
+    token_file = BASE_DIR / os.getenv("GOOGLE_TOKEN_FILE", "token.json")
+    if not token_file.is_absolute():
+        token_file = BASE_DIR / token_file
     if not token_file.exists():
+        print(f"[Google Drive] OAuth token not found: {token_file.name}")
         return None
     try:
         from google.oauth2.credentials import Credentials
         from google.auth.transport.requests import Request
         from googleapiclient.discovery import build
-
         scopes = ["https://www.googleapis.com/auth/drive.readonly"]
         creds = Credentials.from_authorized_user_file(str(token_file), scopes)
         if creds.expired and creds.refresh_token:
             creds.refresh(Request())
             token_file.write_text(creds.to_json(), encoding="utf-8")
         if not creds.valid:
+            print("[Google Drive] Saved token is invalid. Reconnect Google Drive.")
             return None
-        return build("drive", "v3", credentials=creds)
-    except Exception:
-        return None
+        service = build("drive", "v3", credentials=creds, cache_discovery=False)
+        service.about().get(fields="user(emailAddress)").execute()
+        print("[Google Drive] Connected successfully.")
+        return service
+    except ImportError as exc:
+        print(f"[Google Drive] Required packages missing: {exc}")
+    except Exception as exc:
+        print(f"[Google Drive] Connection failed: {type(exc).__name__}: {exc}")
+    return None
+
+
+def connect_google_drive_interactive():
+    """Run the local OAuth consent flow and persist a read-only Drive token."""
+    credentials_file = BASE_DIR / os.getenv("GOOGLE_CREDENTIALS_FILE", "credentials.json")
+    token_file = BASE_DIR / os.getenv("GOOGLE_TOKEN_FILE", "token.json")
+    if not credentials_file.is_absolute():
+        credentials_file = BASE_DIR / credentials_file
+    if not token_file.is_absolute():
+        token_file = BASE_DIR / token_file
+    if not credentials_file.exists():
+        raise FileNotFoundError("backend/credentials.json is missing. Add your own Google OAuth Desktop credentials first.")
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from googleapiclient.discovery import build
+    scopes = ["https://www.googleapis.com/auth/drive.readonly"]
+    flow = InstalledAppFlow.from_client_secrets_file(str(credentials_file), scopes)
+    creds = flow.run_local_server(port=0, open_browser=True, access_type="offline", prompt="consent")
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    token_file.write_text(creds.to_json(), encoding="utf-8")
+    service = build("drive", "v3", credentials=creds, cache_discovery=False)
+    service.about().get(fields="user(emailAddress)").execute()
+    return service
 
 
 def find_drive_files(service, lecture_name):
@@ -439,26 +518,14 @@ class MaterialSelector:
     # AUTOMATIC: find the file from the request itself
     # --------------------------------------------------------
     
-    def auto_select(self, lecture_name):
-        print(
-            f'\nSearching "{lecture_name}" on this computer '
-            "and Google Drive..."
-        )
-
-        candidates = find_local_files(lecture_name)
-
-        self.service = drive_service_silent()
-
-        if self.service:
-            try:
-                candidates += find_drive_files(
-                    self.service,
-                    lecture_name,
-                )
-            except Exception as exc:
-                print(f"Google Drive search skipped: {exc}")
-        else:
-            print("Google Drive not connected; searching local files only.")
+    def auto_select(self, lecture_name, local_folder=None, drive_folder_id=None):
+        if not local_folder:
+            raise RuntimeError("No course-specific lecture folder is saved. Select and save it in Course Setup first.")
+        if drive_folder_id:
+            raise RuntimeError("Course-specific Google Drive folder selection is not yet configured.")
+        print(f'`nSearching "{lecture_name}" only in the selected course folder...')
+        candidates = find_local_files(lecture_name, folder=local_folder)
+        print("Searching only the selected local course folder.")
 
         # Prefer the computer copy when filenames are identical.
         unique = {}
@@ -526,7 +593,7 @@ class MaterialSelector:
             return item["path"]
         try:
             path = download_drive_file(self.service, item)
-            print(f"✓ Downloaded from Google Drive: {path.name}")
+            print(f"Ã¢Å“â€œ Downloaded from Google Drive: {path.name}")
             return path
         except Exception as e:
             print(f"! Google Drive download failed: {e}")
@@ -582,8 +649,8 @@ class MaterialSelector:
     # --------------------------------------------------------
     def select_from_computer(self):
         print()
-        print("✓ My Computer selected.")
-        print("✓ Opening Windows file picker...")
+        print("Ã¢Å“â€œ My Computer selected.")
+        print("Ã¢Å“â€œ Opening Windows file picker...")
 
         if sys.platform != "win32":
             raise RuntimeError("My Computer file picker requires Windows.")
@@ -647,7 +714,7 @@ finally {
         if file_path.suffix.lower() not in ALLOWED_EXTENSIONS:
             raise RuntimeError(f"Unsupported file type: {file_path.suffix}")
 
-        print(f"✓ Material selected: {file_path.name}")
+        print(f"Ã¢Å“â€œ Material selected: {file_path.name}")
         return file_path
 
     # --------------------------------------------------------
@@ -655,7 +722,7 @@ finally {
     # --------------------------------------------------------
     def select_from_google_drive(self):
         print()
-        print("✓ Google Drive selected.")
+        print("Ã¢Å“â€œ Google Drive selected.")
 
         credentials_file = BASE_DIR / "credentials.json"
         token_file = BASE_DIR / "token.json"
@@ -769,7 +836,7 @@ finally {
                 _, done = downloader.next_chunk()
             output_path = TEMP_DIR / Path(selected["name"]).name
             output_path.write_bytes(buffer.getvalue())
-            print(f"✓ Material selected: {output_path.name}")
+            print(f"Ã¢Å“â€œ Material selected: {output_path.name}")
             return output_path
         except Exception as e:
             print(f"! Google Drive download failed: {e}")
@@ -804,7 +871,7 @@ def teacher_review(draft):
         print("TEACHER REVIEW - please verify")
         divider()
         if draft.get("note"):
-            print(f"⚠ {draft['note']}")
+            print(f"Ã¢Å¡Â  {draft['note']}")
         if draft.get("course"):
             print(f"Course      : {draft['course']}")
             print(f"Week        : {draft['week']}")
@@ -873,30 +940,151 @@ class MoodleAutomation:
     # ========================================================
     # LOGIN
     # ========================================================
-    def login(self):
+    def login(self, username=None, password=None):
+        """Log in to Moellim and verify the authenticated session."""
+
         print("\n[1] Logging into live Moellim...")
 
-        if not MOELLIM_USERNAME or not MOELLIM_PASSWORD:
-            raise RuntimeError("MOELLIM_USERNAME / MOELLIM_PASSWORD .env mein missing hain.")
+        login_username = (username or MOELLIM_USERNAME or "").strip()
+        login_password = password or MOELLIM_PASSWORD
+
+        if not login_username or not login_password:
+            raise RuntimeError(
+                "Moellim username or password is missing. "
+                "Check the environment configuration."
+            )
 
         self.page.goto(
-            f"{MOELLIM_BASE_URL}/login/index.php", wait_until="domcontentloaded"
+            f"{MOELLIM_BASE_URL}/login/index.php",
+            wait_until="domcontentloaded",
+            timeout=60000,
         )
-        pause(1)
 
-        username = self.page.locator('input[name="username"]')
-        if username.count() > 0:  # not already logged in
-            self.page.locator('input[name="username"]').first.fill(MOELLIM_USERNAME)
-            self.page.locator('input[name="password"]').first.fill(MOELLIM_PASSWORD)
-            self.page.locator(
-                'button[type="submit"], input[type="submit"]'
-            ).first.click()
-            self.settle(seconds=30, extra=2)
+        username_field = self.page.locator('input[name="username"]')
 
-        if "/login/" in self.page.url:
-            raise RuntimeError("Login fail hua (username/password check karein).")
+        try:
+            username_field.wait_for(state="visible", timeout=30000)
+        except PlaywrightTimeoutError:
+            # The session may already be authenticated.
+            authenticated = (
+                self.page.locator(
+                    'a[href*="logout"], '
+                    'a[href*="login/logout.php"], '
+                    '#user-menu-toggle, '
+                    '.usermenu'
+                ).count() > 0
+            )
 
-        print(f"✓ Logged in: {self.page.title()}")
+            if authenticated:
+                print(f"Logged in: {self.page.title()}")
+                return
+
+            raise RuntimeError(
+                "Moellim login form could not be found. "
+                f"Current URL: {self.page.url}"
+            )
+
+        password_field = self.page.locator('input[name="password"]')
+
+        if password_field.count() == 0:
+            raise RuntimeError(
+                "The password field was not found on the Moellim login page."
+            )
+
+        username_field.first.fill(login_username)
+        password_field.first.fill(login_password)
+
+        submit_button = self.page.locator(
+            'button[type="submit"], input[type="submit"]'
+        )
+
+        if submit_button.count() == 0:
+            raise RuntimeError(
+                "The login submit button was not found."
+            )
+
+        submit_button.first.click()
+
+        # Wait for Moodle to process the login response.
+        # Do not rely on the URL alone.
+        for _ in range(60):
+            self.page.wait_for_timeout(1000)
+
+            current_url = self.page.url.lower()
+
+            # Check common Moodle login error containers.
+            error_selectors = [
+                "#loginerrormessage",
+                ".loginerrors",
+                ".alert-danger",
+                '[role="alert"]',
+            ]
+
+            login_error = ""
+
+            for selector in error_selectors:
+                try:
+                    locator = self.page.locator(selector)
+                    if locator.count() > 0 and locator.first.is_visible():
+                        login_error = clean_text(
+                            locator.first.inner_text()
+                        )
+                        if login_error:
+                            break
+                except Exception:
+                    continue
+
+            if login_error:
+                raise RuntimeError(
+                    f"Moellim rejected the login request: {login_error}"
+                )
+
+            # Detect a successful authenticated Moodle session.
+            success_selectors = [
+                'a[href*="logout"]',
+                'a[href*="login/logout.php"]',
+                '#user-menu-toggle',
+                '.usermenu',
+            ]
+
+            for selector in success_selectors:
+                try:
+                    locator = self.page.locator(selector)
+                    if locator.count() > 0 and locator.first.is_visible():
+                        print(
+                            f"Successfully logged in to Moellim: "
+                            f"{self.page.title()}"
+                        )
+                        return
+                except Exception:
+                    continue
+
+            # A non-login page with no login form is another
+            # indication that Moodle completed authentication.
+            if (
+                "/login/" not in current_url
+                and self.page.locator('input[name="username"]').count() == 0
+            ):
+                print(
+                    f"Successfully logged in to Moellim: "
+                    f"{self.page.title()}"
+                )
+                return
+
+        # Login did not complete. Collect useful diagnostic details.
+        try:
+            page_text = clean_text(
+                self.page.locator("body").inner_text(timeout=5000)
+            )[:2000]
+        except Exception:
+            page_text = "Page text could not be retrieved."
+
+        raise RuntimeError(
+            "Moellim login could not be verified after submitting the form. "
+            f"Current URL: {self.page.url}. "
+            f"Page title: {self.page.title()}. "
+            f"Visible page text: {page_text}"
+        )
 
     # ========================================================
     # COURSE DISCOVERY
@@ -966,7 +1154,7 @@ class MoodleAutomation:
                 pause(1)
                 result = self.match_course(requested)
                 if result:
-                    print(f"✓ Course found: {result['name']}")
+                    print(f"Ã¢Å“â€œ Course found: {result['name']}")
                     return result
             except Exception:
                 pass
@@ -977,7 +1165,7 @@ class MoodleAutomation:
         print("\n[3] Opening live course...")
         self.page.goto(course["href"], wait_until="domcontentloaded")
         pause(2)
-        print(f"✓ Course opened: {self.page.title()}")
+        print(f"Ã¢Å“â€œ Course opened: {self.page.title()}")
 
     # ========================================================
     # EDIT MODE  (new UI: "Edit mode" toggle in top bar)
@@ -1003,7 +1191,7 @@ class MoodleAutomation:
         print("\n[4] Ensuring Edit mode is ON...")
 
         if self.edit_mode_on():
-            print("✓ Edit mode is already ON.")
+            print("Ã¢Å“â€œ Edit mode is already ON.")
             return
 
         switch = self.page.locator('input[name="setmode"]')
@@ -1025,7 +1213,7 @@ class MoodleAutomation:
                 raise RuntimeError("Edit mode ON nahi ho saka.")
 
         self.settle()
-        print("✓ Edit mode turned ON.")
+        print("Ã¢Å“â€œ Edit mode turned ON.")
 
     # ========================================================
     # SECTIONS / WEEKS
@@ -1064,7 +1252,7 @@ class MoodleAutomation:
         sections = self.discover_sections()
         if show:
             weekly = [s for s in sections if s["section_number"] > 0]
-            print(f"✓ Date-based sections found: {len(weekly)}")
+            print(f"Ã¢Å“â€œ Date-based sections found: {len(weekly)}")
             for s in weekly:
                 print(f"    Week {s['section_number']}: {s['date_range']}")
         for s in sections:
@@ -1077,7 +1265,7 @@ class MoodleAutomation:
         section = self.find_week(week_number, show=True)
 
         if section:
-            print(f"✓ Week {week_number} found: {section['date_range']}")
+            print(f"Ã¢Å“â€œ Week {week_number} found: {section['date_range']}")
             self.page.locator(f"#{section['section_id']}").scroll_into_view_if_needed()
             pause(1)
             return section
@@ -1092,7 +1280,7 @@ class MoodleAutomation:
         for _ in range(30):
             current = self.find_week(week_number)
             if current:
-                print(f"✓ Week {week_number} ready: {current['date_range']}")
+                print(f"Ã¢Å“â€œ Week {week_number} ready: {current['date_range']}")
                 return current
 
             add_week = first_visible(
@@ -1133,7 +1321,7 @@ class MoodleAutomation:
         plus.scroll_into_view_if_needed()
         plus.click()
         pause(0.7)
-        print("      ✓ '+' clicked.")
+        print("      Ã¢Å“â€œ '+' clicked.")
 
         # 2) "Activity or resource" item of the dropdown that just opened
         chooser = wait_visible(
@@ -1145,7 +1333,7 @@ class MoodleAutomation:
         if not chooser:
             raise RuntimeError("'Activity or resource' option nahi dikha.")
         chooser.click()
-        print("      ✓ 'Activity or resource' clicked.")
+        print("      Ã¢Å“â€œ 'Activity or resource' clicked.")
 
         # 3) wait for the "Add an activity or resource" popup
         option = wait_visible(
@@ -1154,24 +1342,23 @@ class MoodleAutomation:
         )
         if not option:
             raise RuntimeError("Activity/resource popup open nahi hua.")
-        print("      ✓ Activity/resource popup opened.")
+        print("      Ã¢Å“â€œ Activity/resource popup opened.")
 
     
+
     def select_resource_type(self, title, label):
-        """Select a Moodle resource and wait for its settings form."""
+        """Select a Moodle resource and detect either direct or chooser form."""
+
         print(f"      Selecting Moodle '{label}'...")
 
-        options = self.page.locator(
-            'a[data-action="add-chooser-option"]'
-        )
-
+        options = self.page.locator('a[data-action="add-chooser-option"]')
         wanted = first_visible(
             self.page.locator(
-                f'a[data-action="add-chooser-option"][title="{title}"]'
+                'a[data-action="add-chooser-option"]'
+                f'[title="{title}"]'
             )
         )
 
-        # Fallback: match the visible option text.
         if not wanted:
             for i in range(options.count()):
                 option = options.nth(i)
@@ -1192,53 +1379,57 @@ class MoodleAutomation:
 
         wanted.scroll_into_view_if_needed()
         wanted.click()
+        print(f"      Resource '{label}' selected.")
 
-        # Wait briefly for the chooser to select the resource.
-        add_button = self.page.locator(
-            'button[data-action="add-selected-chooser-option"]'
-        ).filter(visible=True)
+        form_name = self.page.locator("#id_name")
+
+        # Some Moodle versions navigate directly to modedit.php.
+        try:
+            form_name.wait_for(state="visible", timeout=10000)
+            print(f"      Direct '{label}' settings form opened.")
+            return
+        except PlaywrightTimeoutError:
+            pass
+
+        # Otherwise, the chooser may display a separate Add action.
+        add_action = self.page.get_by_role("button", name="Add", exact=True)
 
         try:
-            add_button.first.wait_for(state="visible", timeout=10000)
+            add_action.first.wait_for(state="visible", timeout=10000)
         except PlaywrightTimeoutError:
             raise RuntimeError(
-                f"The Add button did not become visible after selecting '{label}'."
+                f"Neither the '{label}' settings form nor the Moodle Add action "
+                f"appeared. URL: {self.page.url!r}"
             )
 
-        add_button.first.click()
+        add_ready = False
+        for _ in range(20):
+            try:
+                if add_action.first.is_visible() and add_action.first.is_enabled():
+                    add_ready = True
+                    break
+            except Exception:
+                pass
+            self.page.wait_for_timeout(500)
 
-        # Do not rely exclusively on a URL change. The form is the real
-        # indicator that the resource settings page has opened.
+        if not add_ready:
+            raise RuntimeError(
+                f"Moodle Add action appeared but was not enabled for '{label}'."
+            )
+
+        add_action.first.scroll_into_view_if_needed()
+        add_action.first.click()
+        print(f"      Moodle Add action clicked for '{label}'.")
+
         try:
-            self.page.locator("#id_name").wait_for(
-                state="visible",
-                timeout=30000,
-            )
+            form_name.wait_for(state="visible", timeout=30000)
         except PlaywrightTimeoutError:
-            current_url = self.page.url
-
-            # Collect useful diagnostics without exposing credentials.
-            try:
-                page_title = self.page.title()
-            except Exception:
-                page_title = "(unavailable)"
-
-            try:
-                visible_text = self.page.locator("body").inner_text(
-                    timeout=3000
-                )[:1500]
-            except Exception:
-                visible_text = "(page text unavailable)"
-
             raise RuntimeError(
-                f"'{label}' settings form did not appear. "
-                f"Current URL: {current_url!r}; "
-                f"Page title: {page_title!r}; "
-                f"Visible page text: {visible_text!r}"
+                f"'{label}' settings form did not appear after Add. "
+                f"URL: {self.page.url!r}"
             )
 
-        print(f"      ✓ 'New {label}' settings form opened.")
-
+        print(f"      'New {label}' settings form opened.")
 
     def select_file_resource(self):
         self.select_resource_type("Add a new File", "File")
@@ -1265,7 +1456,7 @@ class MoodleAutomation:
         add_btn.scroll_into_view_if_needed()
         pause(0.5)
         add_btn.click()
-        print("      ✓ File picker opened.")
+        print("      Ã¢Å“â€œ File picker opened.")
 
         # 2) "Upload a file" in the picker's left menu
         repo = wait_visible(
@@ -1284,7 +1475,7 @@ class MoodleAutomation:
         if file_input.count() == 0:
             raise RuntimeError("Upload file input nahi mila.")
         file_input.first.set_input_files(str(file_path))
-        print(f"      ✓ File chosen: {file_path.name}")
+        print(f"      Ã¢Å“â€œ File chosen: {file_path.name}")
 
         # 4) "Upload this file"
         upload_btn = first_visible(self.page.locator("button.fp-upload-btn"))
@@ -1298,7 +1489,7 @@ class MoodleAutomation:
         except PlaywrightTimeoutError:
             raise RuntimeError("File upload complete nahi hui.")
         pause(1)
-        print("      ✓ File uploaded.")
+        print("      Ã¢Å“â€œ File uploaded.")
 
     # ========================================================
     # NAME + DESCRIPTION + DISPLAY DESCRIPTION
@@ -1338,17 +1529,17 @@ class MoodleAutomation:
         print("\n[SETTINGS] Filling File settings...")
 
         self.page.locator("#id_name").fill(draft["heading"])
-        print("      ✓ Name filled.")
+        print("      Ã¢Å“â€œ Name filled.")
 
         self.fill_description(draft["description"], draft["key_points"])
-        print("      ✓ Description filled.")
+        print("      Ã¢Å“â€œ Description filled.")
 
         # NOTE: there is also a hidden input with the same name, so use the id.
         checkbox = self.page.locator("#id_showdescription")
         checkbox.scroll_into_view_if_needed()
         if not checkbox.is_checked():
             checkbox.check()
-        print("      ✓ 'Display description on course page' checked.")
+        print("      Ã¢Å“â€œ 'Display description on course page' checked.")
 
     # ========================================================
     # SAVE
@@ -1364,7 +1555,7 @@ class MoodleAutomation:
                 "Save nahi hua (form mein koi required field/validation error ho sakta hai)."
             )
         self.settle(extra=2)
-        print("      ✓ Resource saved.")
+        print("      Ã¢Å“â€œ Resource saved.")
 
     # ========================================================
     # VERIFY
@@ -1394,7 +1585,7 @@ class MoodleAutomation:
         # Strict: the new resource must have ADDED a new appearance of its name.
         # (Old items with the same name/file cannot cause a false "verified".)
         if count_after > count_before:
-            print("\n✓ VERIFIED IN SAME SECTION")
+            print("\nÃ¢Å“â€œ VERIFIED IN SAME SECTION")
             print(f"  Week     : {week_number}")
             print(f"  Section  : {section['date_range']}")
             print(f"  Resource : {expected_name}")
@@ -1464,6 +1655,123 @@ def launch_browser(p):
     return browser, context
 
 
+def verify_course_lecture_records(course_name, uploads):
+    """
+    Read-only check of saved lecture headings/files in their exact Moellim weeks.
+    Returns present/missing/unknown per history record. Never uploads or edits Moodle.
+    """
+    if not MOELLIM_USERNAME or not MOELLIM_PASSWORD:
+        raise RuntimeError("Moellim credentials are not configured.")
+
+    results = []
+
+    with sync_playwright() as p:
+        browser, context = launch_browser(p)
+        try:
+            page = context.new_page()
+            moodle = MoodleAutomation(page)
+            moodle.login()
+            course = moodle.discover_course(course_name)
+            moodle.open_course(course)
+
+            for upload in uploads:
+                record_id = int(upload["id"])
+                try:
+                    week = int(upload["week"])
+                    section = moodle.find_week(week)
+                    if not section:
+                        results.append({"id": record_id, "status": "unknown",
+                                        "reason": f"Week {week} section was not found."})
+                        continue
+
+                    section_text = page.locator(
+                        f"#{section['section_id']}"
+                    ).inner_text(timeout=10000)
+
+                    def normalized(value):
+                        return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
+
+                    content = normalized(section_text)
+                    candidates = [
+                        normalized(upload.get("title")),
+                        normalized(upload.get("file_name")),
+                    ]
+                    candidates = [value for value in candidates if len(value) >= 5]
+
+                    if not candidates:
+                        results.append({"id": record_id, "status": "unknown",
+                                        "reason": "No reliable title or filename to verify."})
+                    elif any(value in content for value in candidates):
+                        results.append({"id": record_id, "status": "present"})
+                    else:
+                        results.append({"id": record_id, "status": "missing"})
+                except Exception as exc:
+                    results.append({"id": record_id, "status": "unknown",
+                                    "reason": str(exc)})
+
+        finally:
+            browser.close()
+
+    return results
+
+
+
+def scan_live_course_lecture_weeks(course_name):
+    """Read-only scan of weekly Moellim sections for uploaded lecture resources."""
+    if not MOELLIM_USERNAME or not MOELLIM_PASSWORD:
+        raise RuntimeError("Moellim credentials are not configured.")
+
+    weeks_with_lecture = []
+    checked_weeks = []
+
+    with sync_playwright() as p:
+        browser, context = launch_browser(p)
+        try:
+            page = context.new_page()
+            moodle = MoodleAutomation(page)
+            moodle.login()
+            course = moodle.discover_course(course_name)
+            moodle.open_course(course)
+
+            for section in moodle.discover_sections():
+                week = int(section["section_number"])
+                if week <= 0:
+                    continue
+
+                locator = page.locator(f"#{section['section_id']}")
+                locator.wait_for(state="attached", timeout=10000)
+                checked_weeks.append(week)
+
+                selectors = [
+                    "li.activity.modtype_resource",
+                    ".activity.modtype_resource",
+                    'a[href*="/mod/resource/view.php"]',
+                    'a[href*="/pluginfile.php"]',
+                ]
+                found = False
+                for selector in selectors:
+                    try:
+                        if locator.locator(selector).count() > 0:
+                            found = True
+                            break
+                    except Exception:
+                        pass
+
+                if found:
+                    weeks_with_lecture.append(week)
+        finally:
+            browser.close()
+
+    return {
+        "checked_weeks": sorted(set(checked_weeks)),
+        "weeks_with_lecture": sorted(set(weeks_with_lecture)),
+        "has_any_lecture": bool(weeks_with_lecture),
+    }
+
+
+
+
+
 def main():
     print()
     print("=" * 70)
@@ -1509,8 +1817,8 @@ def main():
             moodle.login()
 
             course = moodle.discover_course(parsed["course"])
-            print(f"\n✓ Matched course: {course['name']}")
-            print(f"✓ Live course URL: {course['href']}")
+            print(f"\nÃ¢Å“â€œ Matched course: {course['name']}")
+            print(f"Ã¢Å“â€œ Live course URL: {course['href']}")
             log["course_matched"] = course["name"]
 
             moodle.open_course(course)
@@ -1568,7 +1876,7 @@ def main():
                 log["status"] = "rejected"
                 log_activity(log)
                 return
-            print("\n✓ Teacher approved lecture.")
+            print("\nÃ¢Å“â€œ Teacher approved lecture.")
 
             # ---------------- UPLOAD ----------------
             print("\n[8] Starting approved Moodle upload...")
@@ -1584,7 +1892,7 @@ def main():
                 print(f"Week    : {parsed['week']}")
                 print(f"Lecture : {draft['heading']}")
                 print(f"File    : {file_path.name}")
-                print("\n✓ Uploaded\n✓ Saved\n✓ Verified in SAME Week")
+                print("\nÃ¢Å“â€œ Uploaded\nÃ¢Å“â€œ Saved\nÃ¢Å“â€œ Verified in SAME Week")
                 log["heading"] = draft["heading"]
                 log["status"] = "success"
                 log_activity(log)
@@ -1615,3 +1923,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+

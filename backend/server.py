@@ -1,8 +1,9 @@
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 import threading
 import queue
 import re
+import os
 from concurrent.futures import Future
 from pydantic import BaseModel
 from typing import Optional, Any
@@ -14,12 +15,16 @@ from secrets import token_urlsafe
 from datetime import datetime, timedelta, timezone
 
 from playwright.sync_api import sync_playwright
+from urllib3 import request
 from backend.live_transcribe_server import (
     router as live_transcribe_router,
 )
 from . import muawin_lecture as automation
 from . import assignment_workflow as assignment_automation
 from . import muawin_combined as combined_automation
+from . import audit_store
+from . import file_assignment as file_assignment_scanner
+from .file_assignment_validation import normalize_assignment_marks
 
 # ============================================================
 # FASTAPI APP
@@ -51,6 +56,62 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def persist_workflow_audit(request: Request, call_next):
+    """Persist workflow lifecycle events without relying on PostgreSQL."""
+    started = datetime.now(timezone.utc)
+    response = await call_next(request)
+    path = request.url.path
+    tracked = ("/api/workflows", "/api/assignment-workflows",
+               "/api/combined-workflows", "/api/integrations/google-drive")
+    if any(path.startswith(prefix) for prefix in tracked):
+        try:
+            auth = request.headers.get("authorization", "")
+            token = auth[7:].strip() if auth.startswith("Bearer ") else ""
+            session = user_sessions.get(token) if token else None
+            if session and session.get("username"):
+                workflow_id = next((part for part in path.split("/")
+                                    if part.startswith(("wf-", "awf-", "cwf-"))), None)
+                status = "Completed" if response.status_code < 400 else "Failed"
+                action = f"{request.method} {path}"
+                details = {"http_status": response.status_code,
+                           "duration_seconds": round((datetime.now(timezone.utc)-started).total_seconds(), 3)}
+                course = None; week = None; file_name = None
+                stores = (workflows, assignment_workflows, combined_workflows)
+                candidates = [store.get(workflow_id) for store in stores] if workflow_id else []
+                def find_value(obj, keys):
+                    if isinstance(obj, dict):
+                        for key in keys:
+                            value = obj.get(key)
+                            if value:
+                                return value
+                        for value in obj.values():
+                            found = find_value(value, keys)
+                            if found: return found
+                    elif isinstance(obj, list):
+                        for value in obj:
+                            found = find_value(value, keys)
+                            if found: return found
+                    return None
+                wf = next((item for item in candidates if item), {})
+                workflow_status = str(wf.get("status") or "").lower() if isinstance(wf, dict) else ""
+                if workflow_status in {"failed", "error", "rejected", "cancelled"}:
+                    status = "Failed"
+                course = find_value(wf, ("course_name", "course"))
+                week = find_value(wf, ("week", "week_number"))
+                file_value = find_value(wf, ("file_path", "file_name", "selected_file", "file"))
+                if file_value:
+                    file_name = Path(str(file_value)).name
+                audit_store.record_event(
+                    teacher_username=session["username"], action=action,
+                    status=status, workflow_id=workflow_id, course=str(course) if course else None,
+                    week=int(week) if str(week).isdigit() else None,
+                    file_name=file_name, details=details)
+        except Exception as exc:
+            print(f"[AUDIT] Could not persist request event: {exc}")
+    return response
+
+
 # ============================================================
 # IN-MEMORY STORES
 # ============================================================
@@ -60,6 +121,8 @@ workflows: dict[str, dict[str, Any]] = {}
 assignment_workflows: dict[str, dict[str, Any]] = {}
 
 combined_workflows: dict[str, dict[str, Any]] = {}
+
+file_assignment_workflows: dict[str, dict[str, Any]] = {}
 
 user_sessions: dict[str, dict[str, Any]] = {}
 
@@ -80,10 +143,16 @@ ASSIGNMENT_DEPENDENCY_POLL_SECONDS = 1.0
 
 class InterpretRequest(BaseModel):
     instruction: str
+    course: Optional[str] = None
+    course_id: Optional[str] = None
+    course_code: Optional[str] = None
 
 
 class PrepareWorkflowRequest(BaseModel):
     instruction: str
+    course: Optional[str] = None
+    course_id: Optional[str] = None
+    course_code: Optional[str] = None
 
 
 class ApproveRequest(BaseModel):
@@ -106,6 +175,21 @@ class CombinedApproveRequest(BaseModel):
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class PrepareFileAssignmentRequest(BaseModel):
+    course: str
+    instruction: Optional[str] = None
+    file_name: Optional[str] = None
+
+
+class ConfirmFileAssignmentRequest(BaseModel):
+    file_name: str
+    week_number: Optional[int] = None
+    title: Optional[str] = None
+    start_date: Optional[str] = None
+    due_date: Optional[str] = None
+    total_marks: Optional[float] = None
 
 
 # ============================================================
@@ -194,6 +278,14 @@ def make_json_safe(value: Any) -> Any:
 # INTENT DETECTION
 # ============================================================
 
+# Normalize Urdu/Arabic digits while preserving Urdu script.
+def normalize_command_text(instruction: str) -> str:
+    text = str(instruction or "").lower().strip()
+    digit_map = str.maketrans("????????????????????", "01234567890123456789")
+    return " ".join(text.translate(digit_map).split())
+
+
+
 def is_assignment_instruction(
     instruction: str,
 ) -> bool:
@@ -202,7 +294,7 @@ def is_assignment_instruction(
     an assignment-related intent.
     """
 
-    text = instruction.lower().strip()
+    text = normalize_command_text(instruction)
 
     assignment_phrases = [
         "create an assignment",
@@ -216,6 +308,11 @@ def is_assignment_instruction(
         "new assignment",
         "assignment",
         "homework",
+        "????????",
+        "???????",
+        "???????? ??????",
+        "???????? ???? ????",
+        "???????? ????",
     ]
 
     return any(
@@ -229,7 +326,15 @@ def is_lecture_instruction(instruction: str) -> bool:
     Detect lecture uploads and uploads of named academic
     materials to Moellim.
     """
-    text = " ".join(instruction.lower().strip().split())
+    text = normalize_command_text(instruction)
+
+    # Short English and Roman Urdu lecture commands
+    has_lecture_number = re.search(r"\b(?:lecture|lec)\s*\d+\b", text)
+    has_upload_action = re.search(
+        r"\b(?:upload|add|karo|kar|bhejo|bhej|daal|dalo)\b", text
+    )
+    if has_lecture_number and has_upload_action:
+        return True
 
     lecture_phrases = [
         "upload lecture",
@@ -244,6 +349,13 @@ def is_lecture_instruction(instruction: str) -> bool:
         "add lecture material",
         "add notes",
         "add notes to moellim",
+        "????? ????? ????",
+        "????? ????? ???",
+        "????? ?? ??? ????",
+        "????? ???? ????",
+        "????? ??????",
+        "????? ????? ?? ????? ????",
+        "????? ?????",
     ]
 
     if any(phrase in text for phrase in lecture_phrases):
@@ -358,6 +470,8 @@ def assignment_workflow_public_state(
             wf.get("result")
         ),
         "error": wf.get("error"),
+        "missing_fields": wf.get("missing_fields", []),
+        "clarification_question": wf.get("clarification_question"),
         "dependency": make_json_safe(
             wf.get("dependency")
         ),
@@ -979,7 +1093,7 @@ def find_matching_lecture_workflow(
         # ----------------------------------------------------
 
         print(
-            "\n[DEPENDENCY MATCH] ✓ MATCH FOUND:"
+            "\n[DEPENDENCY MATCH] âœ“ MATCH FOUND:"
         )
 
         print(
@@ -1005,7 +1119,7 @@ def find_matching_lecture_workflow(
     if not candidates:
 
         print(
-            "\n[DEPENDENCY MATCH] ✗ NO MATCH FOUND."
+            "\n[DEPENDENCY MATCH] âœ— NO MATCH FOUND."
         )
 
         print(
@@ -1302,21 +1416,33 @@ def schedule_assignment_dependency(
     )
 
 
-def select_combined_lecture_file(lecture_name: str):
-    """
-    Select a lecture without blocking FastAPI on terminal input.
-    Returns the selected local/downloaded file path or raises an error.
-    """
-    selector = automation.MaterialSelector()
+def select_course_lecture_file(lecture_name: str, course_name: str, session: dict[str, Any]):
+    """Select a lecture only from the folder saved for this teacher and course."""
+    from . import ai_db
 
-    file_path = selector.auto_select(lecture_name)
+    teacher = str(session.get("username") or "").strip()
+    course = str(course_name or "").strip()
+
+    if not teacher or not course:
+        raise RuntimeError("Teacher and selected course are required.")
+
+    setup = ai_db.get_course_setup(teacher, course)
+    folder_path = (setup or {}).get("folder_path")
+
+    if not folder_path:
+        raise RuntimeError(
+            f"No local lecture folder is saved for '{course}'. "
+            "Please select and save this course's folder in Course Setup."
+        )
+
+    selector = automation.MaterialSelector()
+    file_path = selector.auto_select(
+        lecture_name,
+        local_folder=folder_path,
+    )
 
     if not file_path:
-        raise RuntimeError(
-            f"No lecture file could be selected for '{lecture_name}'. "
-            "Please ensure a matching file exists locally or in the "
-            "connected Google Drive."
-        )
+        raise RuntimeError(f"No matching lecture found in the saved folder for '{course}'.")
 
     return selector, file_path
 
@@ -1860,10 +1986,10 @@ def authenticate_moellim_sync(
             "\n[AUTH] Logging into live Moellim..."
         )
 
-        moodle.login()
+        moodle.login(username, password)
 
         print(
-            f"✓ Logged in to Moellim as "
+            f"âœ“ Logged in to Moellim as "
             f"{username}"
         )
 
@@ -2284,7 +2410,7 @@ async def auth_login(request: LoginRequest):
             password,
         )
 
-        # Diagnostic logging — never print the password.
+        # Diagnostic logging â€” never print the password.
         courses = result.get("courses", [])
 
         print("\n========== MUAWIN LOGIN DIAGNOSTICS ==========")
@@ -2349,7 +2475,42 @@ async def interpret_instruction(
         authorization
     )
 
-    instruction = request.instruction.strip()
+    original_instruction = request.instruction.strip()
+    instruction = original_instruction
+    assignment_mode = "not_applicable"
+
+    # Use Gemini to understand natural teacher commands.
+    # Existing parsers remain the fallback if AI interpretation is unavailable.
+    try:
+        from . import muawin_ai
+
+        course_context = (
+            getattr(request, "course", None)
+            or getattr(request, "course_name", None)
+            or getattr(request, "selected_course", None)
+            or ""
+        )
+
+        ai_interpretation = muawin_ai.interpret_teacher_command(
+            original_instruction,
+            str(course_context),
+        )
+
+        if ai_interpretation:
+            instruction = ai_interpretation["canonical_instruction"]
+            assignment_mode = ai_interpretation.get(
+                "assignment_mode", "not_applicable"
+            )
+            print(
+                "[MUAWIN AI] Command interpreted:",
+                ai_interpretation.get("intent"),
+                "| confidence:",
+                ai_interpretation.get("confidence"),
+            )
+
+    except Exception as ai_error:
+        print(f"[MUAWIN AI] Interpreter fallback: {ai_error}")
+        instruction = original_instruction
 
     if not instruction:
 
@@ -2369,6 +2530,14 @@ async def interpret_instruction(
                 instruction
             )
         )
+
+        # Preserve the AI interpreter's distinction between an
+        # existing assignment document and a newly generated assignment.
+        if (
+            assignment_mode == "existing_file_upload"
+            and "assignment" not in requested_workflows
+        ):
+            requested_workflows.append("assignment")
 
         if not requested_workflows:
 
@@ -2438,7 +2607,7 @@ async def interpret_instruction(
 
                 assignment_match = re.search(
                     r"((?:create|generate|make|prepare)\s+"
-                    r"(?:an\s+)?assignment\b.+)$",
+                    r"(?:an\s+)?assignment\b.*)$",
                     instruction,
                     re.IGNORECASE,
                 )
@@ -2454,7 +2623,7 @@ async def interpret_instruction(
 
                     assignment_match = re.search(
                         r"((?:create|generate|make|prepare)"
-                        r".+?assignment\b.+)$",
+                        r".+?assignment\b.*)$",
                         instruction,
                         re.IGNORECASE,
                     )
@@ -2621,6 +2790,17 @@ async def interpret_instruction(
             == "assignment"
         ):
 
+            if assignment_mode == "existing_file_upload":
+                return {
+                    "intent": "Upload Existing Assignment",
+                    "workflow_type": "file_assignment",
+                    "assignment_mode": "existing_file_upload",
+                    "is_multi_action": False,
+                    "detected_actions": ["Upload Existing Assignment"],
+                    "course": request.course,
+                    "raw_instruction": instruction,
+                }
+
             parsed = (
                 assignment_automation
                 .parse_request(
@@ -2634,6 +2814,9 @@ async def interpret_instruction(
 
                 "workflow_type":
                     "assignment",
+
+                "assignment_mode":
+                    "generate_new",
 
                 "is_multi_action":
                     False,
@@ -2906,6 +3089,20 @@ async def prepare_workflow(
             instruction
         )
 
+        selected_course = (
+            request.course or request.course_code or ""
+        ).strip()
+
+        if not parsed.get("course") and selected_course:
+            parsed["course"] = selected_course
+
+        if selected_course:
+            wf["course"] = selected_course
+            wf["course_name"] = selected_course
+
+        if request.course_id:
+            wf["course_id"] = str(request.course_id)
+
         wf["parsed"] = parsed
 
         update_step(
@@ -2915,7 +3112,7 @@ async def prepare_workflow(
         )
 
         print(
-            "\n✓ Parsed request:"
+            "\nâœ“ Parsed request:"
             f"\n  Course: {parsed.get('course')}"
             f"\n  Week: {parsed.get('week')}"
             f"\n  Lecture: {parsed.get('lecture')}"
@@ -2943,7 +3140,7 @@ async def prepare_workflow(
         )
 
         print(
-            f"\n✓ Workflow prepared: "
+            f"\nâœ“ Workflow prepared: "
             f"{workflow_id}"
         )
 
@@ -3052,10 +3249,10 @@ def prepare_moellim_workflow_sync(
             f"{session['username']}"
         )
 
-        moodle.login()
+        moodle.login(session.get('username'), session.get('password'))
 
         print(
-            f"✓ Logged into Moellim as "
+            f"âœ“ Logged into Moellim as "
             f"{session['username']}."
         )
 
@@ -3090,7 +3287,7 @@ def prepare_moellim_workflow_sync(
         )
 
         print(
-            f"✓ Course found: "
+            f"âœ“ Course found: "
             f"{course_name}"
         )
 
@@ -3118,7 +3315,7 @@ def prepare_moellim_workflow_sync(
         )
 
         print(
-            f"✓ Course opened: "
+            f"âœ“ Course opened: "
             f"{course_name}"
         )
 
@@ -3130,7 +3327,7 @@ def prepare_moellim_workflow_sync(
         moodle.ensure_edit_mode()
 
         print(
-            "✓ Edit mode ready."
+            "âœ“ Edit mode ready."
         )
 
         print(
@@ -3145,7 +3342,7 @@ def prepare_moellim_workflow_sync(
         if week_info:
 
             print(
-                f"✓ Week {week} found."
+                f"âœ“ Week {week} found."
             )
 
         else:
@@ -3164,12 +3361,10 @@ def prepare_moellim_workflow_sync(
             "on this computer and Google Drive..."
         )
 
-        selector = (
-            automation.MaterialSelector()
-        )
-
-        file_path = selector.auto_select(
-            lecture
+        selector, file_path = select_course_lecture_file(
+            lecture,
+            course_query,
+            session,
         )
 
         if not file_path:
@@ -3184,7 +3379,7 @@ def prepare_moellim_workflow_sync(
         )
 
         print(
-            f"✓ Lecture material found: "
+            f"âœ“ Lecture material found: "
             f"{file_path}"
         )
 
@@ -3352,7 +3547,7 @@ async def run_assignment_preparation(
         )
 
         print(
-            f"\n✓ Assignment workflow prepared: "
+            f"\nâœ“ Assignment workflow prepared: "
             f"{wf['id']}"
         )
 
@@ -3493,55 +3688,55 @@ async def prepare_assignment_workflow(
             f"{instruction}"
         )
 
-        parsed = (
-            assignment_automation
-            .parse_request(
-                instruction
+        parsed = assignment_automation.parse_request(
+            instruction,
+            selected_course=(
+                request.course
+                or request.course_code
+            ),
+        )
+
+        assignment_automation.validate_parsed_request(parsed)
+
+        wf["parsed"] = parsed
+
+        update_step(wf, "parse", "completed")
+
+        missing = assignment_automation.get_assignment_missing_details(
+            parsed
+        )
+
+        print(
+            f"[ASSIGNMENT DEBUG] Missing fields: {missing} | "
+            f"Parsed request: {parsed}"
+        )
+
+        if missing:
+            wf["status"] = "needs_clarification"
+            wf["missing_fields"] = missing
+
+            questions = {
+                "week": "Which week should this assignment cover?",
+                "deadline": "What is the assignment submission deadline?",
+                "lecture_material": (
+                    "I could not identify the relevant lecture material. "
+                    "Please provide or select the lecture material."
+                ),
+            }
+
+            wf["clarification_question"] = " ".join(
+                questions[field] for field in missing
             )
-        )
 
-        assignment_automation.validate_parsed_request(
-            parsed
-        )
+            return assignment_workflow_public_state(wf)
 
-        wf["parsed"] = (
-            parsed
-        )
+        print("\nâœ“ Assignment request parsed:")
 
-        update_step(
-            wf,
-            "parse",
-            "completed",
-        )
-
-        print(
-            "\n✓ Assignment request parsed:"
-        )
-
-        print(
-            f"  Course: "
-            f"{parsed.get('course')}"
-        )
-
-        print(
-            f"  Week: "
-            f"{parsed.get('week')}"
-        )
-
-        print(
-            f"  Title: "
-            f"{parsed.get('title')}"
-        )
-
-        print(
-            f"  Marks: "
-            f"{parsed.get('max_grade')}"
-        )
-
-        print(
-            f"  Questions: "
-            f"{parsed.get('question_types')}"
-        )
+        print(f"  Course: {parsed.get('course')}")
+        print(f"  Week: {parsed.get('week')}")
+        print(f"  Title: {parsed.get('title')}")
+        print(f"  Marks: {parsed.get('max_grade')}")
+        print(f"  Questions: {parsed.get('question_types')}")
 
         # ====================================================
         # FIND LECTURE DEPENDENCY
@@ -3748,10 +3943,22 @@ async def prepare_combined_workflow(
             detail="Combined workflow instruction cannot be empty.",
         )
 
+    # Use the course already selected in the MUAWIN interface.
+    selected_course = (
+        request.course or request.course_code or ""
+    ).strip()
+    if not selected_course:
+        raise HTTPException(
+            status_code=400,
+            detail="Selected course was not provided by the interface.",
+        )
+
     # Validate the combined request before opening a browser.
     try:
         lecture_job, assignment_job = (
-            combined_automation.parse_combined(instruction)
+            combined_automation.parse_combined(
+                instruction, selected_course=selected_course
+            )
         )
     except Exception as exc:
         raise HTTPException(
@@ -3783,11 +3990,24 @@ async def prepare_combined_workflow(
         "_assignment_worker": None,
         "_assignment_automation": None,
         "_file_path": None,
-        "course_id": None,
+        "course": selected_course,
+        "course_id": request.course_id,
+        "course_code": request.course_code,
     }
 
     combined_workflows[workflow_id] = wf
     update_step(wf, "parse", "completed")
+
+    # Ask for the student submission deadline before opening Moellim.
+    # The same workflow ID is retained and resumed by /clarify.
+    if assignment_job and not assignment_job.get("duedate"):
+        wf["status"] = "needs_clarification"
+        wf["missing_fields"] = ["deadline"]
+        wf["clarification_question"] = (
+            "What is the assignment submission deadline? You can give a date "
+            "or a duration, for example: 5 days."
+        )
+        return combined_workflow_public_state(wf)
 
     worker = AssignmentPlaywrightWorker(wf, session)
     wf["_assignment_worker"] = worker
@@ -3831,6 +4051,76 @@ async def prepare_combined_workflow(
         print(f"Combined workflow preparation failed: {exc}")
 
     return combined_workflow_public_state(wf)
+
+
+@app.post("/api/combined-workflows/{workflow_id}/clarify")
+async def clarify_combined_workflow(
+    workflow_id: str,
+    request: dict[str, Any],
+    authorization: Optional[str] = Header(None),
+):
+    session = verify_combined_workflow_owner(
+        combined_workflows.get(workflow_id), authorization
+    )
+    wf = combined_workflows[workflow_id]
+
+    if wf.get("status") != "needs_clarification" or "deadline" not in (wf.get("missing_fields") or []):
+        raise HTTPException(
+            status_code=400,
+            detail="This combined workflow is not waiting for a submission-deadline clarification.",
+        )
+
+    answer = str(request.get("answer", "")).strip()
+    if not answer:
+        raise HTTPException(status_code=400, detail="Please provide the assignment submission deadline.")
+
+    updated_request = str(wf.get("request") or "").strip() + "\nDeadline: " + answer
+    try:
+        lecture_job, assignment_job = combined_automation.parse_combined(
+            updated_request, selected_course=wf.get("course")
+        )
+        if not assignment_job or not assignment_job.get("duedate"):
+            wf["clarification_question"] = (
+                "I could not identify that submission deadline. Please provide a date "
+                "or a duration such as 5 days."
+            )
+            return combined_workflow_public_state(wf)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not apply the deadline: {exc}") from exc
+
+    wf["request"] = updated_request
+    wf["parsed"] = {
+        "workflow_type": "combined",
+        "lecture": lecture_job,
+        "assignment": assignment_job,
+    }
+    wf["status"] = "preparing"
+    wf["error"] = None
+    wf["missing_fields"] = []
+    wf["clarification_question"] = None
+    wf["draft"] = None
+    wf["steps"] = create_combined_steps()
+    update_step(wf, "parse", "completed")
+
+    worker = AssignmentPlaywrightWorker(wf, session)
+    wf["_assignment_worker"] = worker
+    try:
+        future = worker.submit(prepare_combined_workflow_sync, wf, session)
+        preparation = await await_worker_future(future)
+        wf.update(preparation)
+        wf["status"] = "waiting_approval"
+        update_step(wf, "approval", "waiting")
+    except Exception as exc:
+        traceback.print_exc()
+        wf["status"] = "failed"
+        wf["error"] = str(exc)
+        try:
+            await cleanup_assignment_workflow(wf)
+        except Exception:
+            traceback.print_exc()
+
+    return combined_workflow_public_state(wf)
+
 # ============================================================
 # ASSIGNMENT WORKFLOW - PREPARATION WORKER
 # ============================================================
@@ -3892,10 +4182,10 @@ def prepare_assignment_workflow_sync(
             page
         )
 
-        moodle.login()
+        moodle.login(session.get('username'), session.get('password'))
 
         print(
-            f"✓ Logged into Moellim as "
+            f"âœ“ Logged into Moellim as "
             f"{session['username']}"
         )
 
@@ -3915,12 +4205,15 @@ def prepare_assignment_workflow_sync(
         )
 
         prepared = (
-            assignment_automation
-            .prepare_assignment_request(
-                page,
-                instruction,
-            )
-        )
+    assignment_automation
+    .prepare_assignment_request(
+        page,
+        instruction,
+        selected_course=(
+            (wf.get("parsed") or {}).get("course")
+        ),
+    )
+)
 
         # ====================================================
         # UPDATE STEPS
@@ -3951,11 +4244,11 @@ def prepare_assignment_workflow_sync(
         )
 
         print(
-            "\n✓ Assignment prepared."
+            "\nâœ“ Assignment prepared."
         )
 
         print(
-            "✓ Browser session will remain "
+            "âœ“ Browser session will remain "
             "open until approval."
         )
 
@@ -4034,6 +4327,95 @@ def prepare_assignment_workflow_sync(
 
 
 
+def select_combined_course_lecture_file(
+    lecture_name: str,
+    course_name: str,
+    session: dict[str, Any],
+):
+    """Strictly select a Combined lecture from its saved course folder only.
+
+    Unlike the shared selector, this never silently picks the newest file when
+    multiple files have the same best match rank.
+    """
+    from . import ai_db
+
+    teacher = str(session.get("username") or "").strip()
+    course = str(course_name or "").strip()
+    requested = str(lecture_name or "").strip()
+
+    if not teacher or not course:
+        raise RuntimeError("Teacher and selected course are required.")
+    if not requested or requested.lower() in {"lecture material", "material"}:
+        raise RuntimeError(
+            "Please specify the lecture name or exact file name so MUAWIN "
+            "does not select a different file by guesswork."
+        )
+
+    setup = ai_db.get_course_setup(teacher, course)
+    folder_path = (setup or {}).get("folder_path")
+    if not folder_path:
+        raise RuntimeError(
+            f"No local lecture folder is saved for '{course}'. "
+            "Please save this course's folder in Course Setup first."
+        )
+
+    folder = Path(folder_path).expanduser()
+    if not folder.is_dir():
+        raise FileNotFoundError(
+            f"The saved lecture folder for '{course}' does not exist: {folder}"
+        )
+
+    # This search is explicitly restricted to the saved course folder.
+    candidates = automation.find_local_files(requested, folder=str(folder))
+    ranked = []
+    for candidate in candidates:
+        rank = automation.match_rank(candidate.get("name", ""), requested)
+        if rank > 0:
+            ranked.append((rank, candidate))
+
+    if not ranked:
+        raise FileNotFoundError(
+            f"No file matching '{requested}' was found inside the saved folder "
+            f"for '{course}'. Please check the file name or choose the correct "
+            "lecture file; MUAWIN will not substitute another file."
+        )
+
+    best_rank = max(rank for rank, _ in ranked)
+    best_matches = [item for rank, item in ranked if rank == best_rank]
+
+    # Deduplicate repeated references to the same physical file only.
+    unique_matches = {}
+    for item in best_matches:
+        path = Path(item["path"]).expanduser().resolve()
+        unique_matches[str(path).casefold()] = (item, path)
+
+    if len(unique_matches) > 1:
+        choices = []
+        for _, (item, path) in sorted(unique_matches.items()):
+            try:
+                display_path = str(path.relative_to(folder.resolve()))
+            except ValueError:
+                display_path = str(path)
+            choices.append(f"- {display_path}")
+        raise RuntimeError(
+            "More than one file matches the requested lecture equally well. "
+            "Please specify the exact file name so MUAWIN can select the "
+            "correct one:\n" + "\n".join(choices)
+        )
+
+    selected_item, selected_path = next(iter(unique_matches.values()))
+    if not selected_path.is_file():
+        raise FileNotFoundError(
+            f"The selected lecture file is no longer available: {selected_path}"
+        )
+
+    print(
+        "[COMBINED PREPARE] Strict course-folder match:",
+        selected_path.name,
+    )
+    return automation.MaterialSelector(), selected_path
+
+
 def prepare_combined_workflow_sync(
     wf: dict[str, Any],
     session: dict[str, Any],
@@ -4057,7 +4439,9 @@ def prepare_combined_workflow_sync(
 
         # 1. Parse the combined instruction.
         lecture_job, assignment_job = (
-            combined_automation.parse_combined(instruction)
+            combined_automation.parse_combined(
+                instruction, selected_course=wf.get("course")
+            )
         )
 
         wf["parsed"] = {
@@ -4090,7 +4474,7 @@ def prepare_combined_workflow_sync(
 
         # Keep the existing login call unchanged.
         moodle = automation.MoodleAutomation(page)
-        moodle.login()
+        moodle.login(session.get('username'), session.get('password'))
 
         wf["automation"] = moodle
         update_step(wf, "login", "completed")
@@ -4110,11 +4494,13 @@ def prepare_combined_workflow_sync(
         update_step(wf, "course", "completed")
 
         # 4. Find the lecture file without terminal prompts.
-        selector = automation.MaterialSelector()
-
-        file_path = Path(
-            selector.auto_select(lecture_job["lecture"])
+        selector, selected_file = select_combined_course_lecture_file(
+            lecture_job["lecture"],
+            lecture_job["course"],
+            session,
         )
+
+        file_path = Path(selected_file)
 
         if not file_path.exists():
             raise FileNotFoundError(
@@ -4140,84 +4526,14 @@ def prepare_combined_workflow_sync(
                 assignment_auto.verify_course(assignment_job["course"])
 
                 # Normalize the requested assignment source.
-                source_value = assignment_job.get("source") or ""
-                source = {}
-                source_is_uploaded = False
+                # Combined assignment week always follows the lecture destination.
+                assignment_job["week"] = int(lecture_job["week"])
+                assignment_auto.find_week_section(assignment_job["week"])
 
-                if isinstance(source_value, dict):
-                    source = source_value.copy()
-                    source_is_uploaded = bool(source.get("uploaded"))
-                else:
-                    source_text = str(source_value).strip()
-
-                    if (
-                        "uploaded" in source_text.lower()
-                        and "lecture" in source_text.lower()
-                    ):
-                        source_is_uploaded = True
-                    else:
-                        lecture_match = re.search(
-                            r"\blecture\s*(\d+)\b",
-                            source_text,
-                            re.IGNORECASE,
-                        )
-                        week_match = re.search(
-                            r"\bweek\s*(\d+)\b",
-                            source_text,
-                            re.IGNORECASE,
-                        )
-
-                        if lecture_match:
-                            source = {
-                                "lecture": int(lecture_match.group(1))
-                            }
-                        elif week_match:
-                            source = {
-                                "week": int(week_match.group(1))
-                            }
-                        elif source_text:
-                            source = {"name": source_text}
-
-                # Use the local file if the source is the lecture
-                # being uploaded in this combined workflow.
-                if not source_is_uploaded and source.get("lecture") is not None:
-                    file_match = re.search(
-                        r"\blecture\s*(\d+)\b",
-                        file_path.stem,
-                        re.IGNORECASE,
-                    )
-                    if file_match:
-                        source_is_uploaded = (
-                            int(file_match.group(1))
-                            == int(source["lecture"])
-                        )
-
-                if source_is_uploaded:
-                    print(
-                        "[COMBINED PREPARE] Using local assignment source:",
-                        file_path.name,
-                    )
-                    lecture_text = combined_automation.local_lecture_text(
-                        file_path
-                    )
-                    source_label = (
-                        f"{file_path.name} (the lecture being uploaded)"
-                    )
-                else:
-                    print(
-                        "[COMBINED PREPARE] Using existing course source:",
-                        source,
-                    )
-                    section, _info = assignment_auto.find_week_section(
-                        assignment_job["week"]
-                    )
-                    lecture_text, source_label = (
-                        assignment_auto.extract_lecture(
-                            source,
-                            assignment_job["week"],
-                            section,
-                        )
-                    )
+                # Use only the exact lecture file selected from this course's
+                # saved folder. Do not search old Moellim course materials.
+                lecture_text = combined_automation.local_lecture_text(file_path)
+                source_label = f"{file_path.name} (the lecture being uploaded)"
 
                 assignment_draft = combined_automation.build_assignment_draft(
                     assignment_job,
@@ -4225,16 +4541,6 @@ def prepare_combined_workflow_sync(
                     source_label,
                     course["name"],
                 )
-                update_step(wf, "generate", "completed")
-                assignment_draft = (
-                combined_automation.build_assignment_draft(
-                    assignment_job,
-                    lecture_text,
-                    source_label,
-                    course["name"],
-                )
-            )
-
                 update_step(wf, "generate", "completed")
 
         # 6. Return drafts for teacher approval.
@@ -4318,6 +4624,120 @@ async def get_assignment_workflow(
     return assignment_workflow_public_state(
         wf
     )
+
+
+# ============================================================
+# ASSIGNMENT WORKFLOW - CLARIFICATION / RESUME
+# ============================================================
+
+@app.post(
+    "/api/assignment-workflows/{workflow_id}/clarify"
+)
+async def clarify_assignment_workflow(
+    workflow_id: str,
+    request: dict[str, Any],
+    authorization: Optional[str] = Header(None),
+):
+    # Reuse the logged-in teacher session.
+    session = get_teacher_session(authorization)
+
+    wf = assignment_workflows.get(workflow_id)
+
+    verify_assignment_workflow_owner(
+        wf,
+        authorization,
+    )
+
+    if wf.get("status") != "needs_clarification":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This assignment workflow is not "
+                "waiting for clarification."
+            ),
+        )
+
+    answer = str(
+        request.get("answer", "")
+    ).strip()
+
+    if not answer:
+        raise HTTPException(
+            status_code=400,
+            detail="Please provide your clarification answer.",
+        )
+
+    # Preserve the original request and append the teacher's answer.
+    original_request = str(
+        wf.get("request", "")
+    ).strip()
+
+    updated_request = (
+        original_request
+        + "\nTeacher clarification: "
+        + answer
+    )
+
+    selected_course = (
+        (wf.get("parsed") or {}).get("course")
+    )
+
+    # Re-parse the same workflow using the saved course.
+    parsed = assignment_automation.parse_request(
+        updated_request,
+        selected_course=selected_course,
+    )
+
+    assignment_automation.validate_parsed_request(
+        parsed
+    )
+
+    missing = (
+        assignment_automation
+        .get_assignment_missing_details(parsed)
+    )
+
+    wf["request"] = updated_request
+    wf["parsed"] = parsed
+    wf["missing_fields"] = missing
+
+    if missing:
+        questions = {
+            "week": "Which week should this assignment cover?",
+            "deadline": "What is the assignment submission deadline?",
+            "lecture_material": (
+                "Please provide or select the relevant lecture material."
+            ),
+        }
+
+        wf["status"] = "needs_clarification"
+        wf["clarification_question"] = " ".join(
+            questions[field]
+            for field in missing
+        )
+
+        return assignment_workflow_public_state(wf)
+
+    # Resume the SAME workflow; do not create another workflow ID.
+    wf["status"] = "preparing"
+    wf["error"] = None
+    wf["clarification_question"] = None
+
+    try:
+        await run_assignment_preparation(
+            wf,
+            session,
+        )
+
+        return assignment_workflow_public_state(wf)
+
+    except Exception as exc:
+        wf["status"] = "failed"
+        wf["error"] = str(exc)
+
+        await cleanup_assignment_workflow(wf)
+
+        return assignment_workflow_public_state(wf)
 
 
 # ============================================================
@@ -4412,7 +4832,7 @@ async def approve_workflow(
     )
 
     print(
-        f"\n✓ Workflow approved: "
+        f"\nâœ“ Workflow approved: "
         f"{workflow_id}"
     )
 
@@ -4490,7 +4910,7 @@ async def approve_assignment_workflow(
     )
 
     print(
-        f"\n✓ Assignment workflow approved: "
+        f"\nâœ“ Assignment workflow approved: "
         f"{workflow_id}"
     )
 
@@ -4567,7 +4987,7 @@ async def reject_workflow(
     )
 
     print(
-        f"\n✗ Workflow rejected: "
+        f"\nâœ— Workflow rejected: "
         f"{workflow_id}"
     )
 
@@ -4634,7 +5054,7 @@ async def reject_assignment_workflow(
     )
 
     print(
-        f"\n✗ Assignment workflow rejected: "
+        f"\nâœ— Assignment workflow rejected: "
         f"{workflow_id}"
     )
 
@@ -4766,7 +5186,7 @@ async def execute_workflow(
         )
 
         print(
-            "\n✓ WORKFLOW COMPLETED SUCCESSFULLY"
+            "\nâœ“ WORKFLOW COMPLETED SUCCESSFULLY"
         )
 
         return workflow_public_state(
@@ -4798,7 +5218,7 @@ async def execute_workflow(
         )
 
         print(
-            f"\n✗ WORKFLOW FAILED: {exc}"
+            f"\nâœ— WORKFLOW FAILED: {exc}"
         )
 
         raise HTTPException(
@@ -4977,7 +5397,7 @@ async def execute_assignment_workflow(
         )
 
         print(
-            "\n✓ ASSIGNMENT WORKFLOW COMPLETED"
+            "\nâœ“ ASSIGNMENT WORKFLOW COMPLETED"
         )
 
         return assignment_workflow_public_state(
@@ -5009,7 +5429,7 @@ async def execute_assignment_workflow(
         )
 
         print(
-            f"\n✗ ASSIGNMENT WORKFLOW FAILED: "
+            f"\nâœ— ASSIGNMENT WORKFLOW FAILED: "
             f"{exc}"
         )
 
@@ -5129,10 +5549,10 @@ def execute_moellim_workflow_sync(
             f"{session['username']}"
         )
 
-        moodle.login()
+        moodle.login(session.get('username'), session.get('password'))
 
         print(
-            "✓ Logged in successfully as "
+            "âœ“ Logged in successfully as "
             f"{session['username']}."
         )
 
@@ -5154,7 +5574,7 @@ def execute_moellim_workflow_sync(
             )
 
         print(
-            "✓ Course found: "
+            "âœ“ Course found: "
             f"{course.get('name')}"
         )
 
@@ -5168,7 +5588,7 @@ def execute_moellim_workflow_sync(
         )
 
         print(
-            "✓ Course opened."
+            "âœ“ Course opened."
         )
 
         print(
@@ -5179,7 +5599,7 @@ def execute_moellim_workflow_sync(
         moodle.ensure_edit_mode()
 
         print(
-            "✓ Edit mode ready."
+            "âœ“ Edit mode ready."
         )
 
         print(
@@ -5208,7 +5628,7 @@ def execute_moellim_workflow_sync(
             )
 
         print(
-            "\n✓ Upload operation completed."
+            "\nâœ“ Upload operation completed."
         )
 
         print(
@@ -5612,3 +6032,626 @@ async def execute_combined_workflow(
             await cleanup_assignment_workflow(wf)
         except Exception:
             traceback.print_exc()
+
+
+# ============================================================
+# PERSISTENT AUDIT LOG + GOOGLE DRIVE CONNECTION
+# ============================================================
+@app.get("/api/activity-logs")
+async def get_activity_logs(authorization: Optional[str] = Header(None), limit: int = 200):
+    session = get_teacher_session(authorization)
+    rows = audit_store.list_events(session["username"], limit=limit)
+    return [{
+        "id": str(row["id"]),
+        "timestamp": row["created_at"],
+        "courseCode": row.get("course") or "",
+        "courseTitle": row.get("course") or "",
+        "action": row["action"],
+        "workflowName": row.get("workflow_id") or "MUAWIN workflow",
+        "status": "Failed" if row["status"] == "Failed" else "Completed",
+        "operator": row["teacher_username"],
+        "details": " | ".join(filter(None, [row.get("file_name"), row.get("action"), row.get("details", {}).get("http_status") and f'HTTP {row["details"]["http_status"]}'])),
+        "moellimRef": row.get("workflow_id"),
+        "week": row.get("week"),
+        "fileName": row.get("file_name"),
+    } for row in rows]
+
+
+@app.get("/api/integrations/google-drive/status")
+async def google_drive_status(authorization: Optional[str] = Header(None)):
+    get_teacher_session(authorization)
+    token_file = automation.BASE_DIR / os.getenv("GOOGLE_TOKEN_FILE", "token.json")
+    credentials_file = automation.BASE_DIR / os.getenv("GOOGLE_CREDENTIALS_FILE", "credentials.json")
+    service = automation.drive_service_silent()
+    email = None
+    if service:
+        try:
+            email = service.about().get(fields="user(emailAddress)").execute().get("user", {}).get("emailAddress")
+        except Exception:
+            pass
+    return {"connected": bool(service), "account": email,
+            "credentials_configured": credentials_file.exists(),
+            "token_saved": token_file.exists(),
+            "message": "Google Drive connected." if service else "Google Drive is not connected. Configure OAuth credentials and connect again."}
+
+
+@app.post("/api/integrations/google-drive/connect")
+async def google_drive_connect(authorization: Optional[str] = Header(None)):
+    session = get_teacher_session(authorization)
+    try:
+        service = await asyncio.to_thread(automation.connect_google_drive_interactive)
+        account = service.about().get(fields="user(emailAddress)").execute().get("user", {}).get("emailAddress")
+        audit_store.record_event(teacher_username=session["username"], action="Google Drive connected",
+                                 status="Completed", details={"google_account": account})
+        return {"connected": True, "account": account, "message": "Google Drive connected successfully."}
+    except Exception as exc:
+        audit_store.record_event(teacher_username=session["username"], action="Google Drive connection",
+                                 status="Failed", details={"error": str(exc)})
+        raise HTTPException(status_code=400, detail=f"Google Drive connection failed: {exc}")
+
+
+# ============================================================
+# FILE-BASED ASSIGNMENT WORKFLOW
+# Isolated from AI assignment and combined workflows.
+# ============================================================
+
+def file_assignment_public_state(wf: dict[str, Any]) -> dict[str, Any]:
+    result = {
+        "id": wf["id"],
+        "workflow_type": "file_assignment",
+        "status": wf["status"],
+        "request": wf.get("request"),
+        "course": wf.get("course"),
+        "candidates": [],
+        "draft": make_json_safe(wf.get("draft")),
+        "missing_fields": wf.get("missing_fields", []),
+        "clarification_question": wf.get("clarification_question"),
+        "error": wf.get("error"),
+        "result": make_json_safe(wf.get("result")),
+    }
+
+    for item in wf.get("candidates", []):
+        result["candidates"].append({
+            key: make_json_safe(item.get(key))
+            for key in (
+                "file_name", "file_size", "is_assignment_candidate",
+                "confidence", "extraction_status", "warnings",
+                "title", "start_date", "due_date", "total_marks",
+                "clos", "rubric_notes", "instructions", "description",
+                "week_numbers", "week_number",
+            )
+        })
+
+    return result
+
+
+def verify_file_assignment_owner(
+    wf: Optional[dict[str, Any]],
+    authorization: Optional[str],
+):
+    if not wf:
+        raise HTTPException(status_code=404, detail="File assignment workflow not found.")
+
+    token = get_session_token(authorization)
+    if wf.get("session_token") != token:
+        raise HTTPException(status_code=403, detail="You do not have access to this workflow.")
+
+    return get_teacher_session(authorization)
+
+
+
+def _infer_assignment_destination_week(session: dict, course_name: str, start_date: str):
+    """Match assignment start date against actual dated Moellim sections."""
+    import re
+    from datetime import date, datetime
+
+    if not start_date:
+        return None
+
+    assignment_date = date.fromisoformat(str(start_date)[:10])
+    p = browser = context = page = None
+
+    try:
+        p = sync_playwright().start()
+        browser, context = automation.launch_browser(p)
+        page = context.new_page()
+
+        moodle = automation.MoodleAutomation(page)
+        moodle.login(session.get("username"), session.get("password"))
+
+        course_info = moodle.discover_course(course_name)
+        moodle.open_course(course_info)
+
+        assignment_auto = assignment_automation.AssignmentAutomation(page)
+        course_id = assignment_automation.extract_course_id(
+            course_info.get("href", "")
+        )
+        if not course_id:
+            raise RuntimeError("Could not identify the selected Moellim course.")
+
+        assignment_auto.course_id = str(course_id)
+        assignment_auto.course_url = page.url
+        assignment_auto.verify_course(course_name)
+
+        dated_sections = []
+        pattern = re.compile(
+            r"(\d{1,2})\s+([A-Za-z]+)\s*[-–—]\s*"
+            r"(\d{1,2})\s+([A-Za-z]+)"
+        )
+
+        sections = assignment_auto.list_sections()
+        print("[FILE ASSIGNMENT] Moellim section headings:", [(item.get("num"), item.get("heading")) for item in sections])
+        for section in sections:
+            heading = section.get("heading", "")
+            match = pattern.search(heading)
+            if not match:
+                continue
+
+            day1, month1, day2, month2 = match.groups()
+
+            def parse_month_day(day, month):
+                for fmt in ("%d %B", "%d %b"):
+                    try:
+                        return datetime.strptime(
+                            f"{day} {month}", fmt
+                        ).month, int(day)
+                    except ValueError:
+                        pass
+                return None
+
+            first = parse_month_day(day1, month1)
+            last = parse_month_day(day2, month2)
+            if not first or not last:
+                continue
+
+            start_month, start_day = first
+            end_month, end_day = last
+
+            for year in (assignment_date.year - 1,
+                         assignment_date.year,
+                         assignment_date.year + 1):
+                try:
+                    range_start = date(year, start_month, start_day)
+                    end_year = year + (
+                        1 if (end_month, end_day) < (start_month, start_day)
+                        else 0
+                    )
+                    range_end = date(end_year, end_month, end_day)
+                except ValueError:
+                    continue
+
+                if range_start <= assignment_date <= range_end:
+                    explicit_week = assignment_auto._week_in(heading)
+                    week_number = explicit_week or int(section["num"])
+                    dated_sections.append({
+                        "week_number": week_number,
+                        "section_number": int(section["num"]),
+                        "heading": heading,
+                    })
+
+        if len(dated_sections) == 1:
+            return dated_sections[0]["week_number"]
+
+        if len(dated_sections) > 1:
+            raise RuntimeError("Assignment start date matched multiple Moellim sections.")
+
+        return None
+
+    finally:
+        for resource in (page, context, browser):
+            try:
+                if resource:
+                    resource.close()
+            except Exception:
+                pass
+        try:
+            if p:
+                p.stop()
+        except Exception:
+            pass
+
+
+@app.post("/api/file-assignment-workflows/prepare")
+async def prepare_file_assignment_workflow(
+    request: PrepareFileAssignmentRequest,
+    authorization: Optional[str] = Header(None),
+):
+    session = get_teacher_session(authorization)
+    token = get_session_token(authorization)
+
+    course = request.course.strip()
+    if not course:
+        raise HTTPException(status_code=400, detail="Select a course first.")
+
+    from . import ai_db
+
+    setup = ai_db.get_course_setup(
+        str(session.get("username") or "").strip(),
+        course,
+    )
+    folder = (setup or {}).get("folder_path")
+
+    if not folder:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No saved assignment/lecture folder found for '{course}'. Save its folder in Course Setup first.",
+        )
+
+    try:
+        candidates = file_assignment_scanner.scan_course_assignment_files(folder)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Could not scan the saved course folder: {exc}")
+    instruction = (request.instruction or "").strip()
+
+    if request.file_name:
+        candidates = [
+            item for item in candidates
+            if item.get("file_name", "").casefold()
+            == request.file_name.strip().casefold()
+        ]
+
+    number_pattern = (
+        r"(?:assignment|assign|ass|assessment|اسائنمنٹ)"
+        r"\s*(?:number|no\.?|#)?\s*[-_:]*\s*([0-9۰-۹٠-٩]+)"
+    )
+
+    number_match = re.search(number_pattern, instruction, re.IGNORECASE)
+
+    if number_match:
+        digits = number_match.group(1).translate(
+            str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+        )
+        requested_number = int(digits)
+
+        def get_assignment_number(item):
+            searchable = " ".join([
+                str(item.get("file_name") or ""),
+                str(item.get("title") or ""),
+            ])
+            match = re.search(
+                r"(?:assignment|assign|ass|assessment|اسائنمنٹ)"
+                r"\s*[-_:]*\s*0*([0-9۰-۹٠-٩]+)",
+                searchable,
+                re.IGNORECASE,
+            )
+            if not match:
+                return None
+
+            value = match.group(1).translate(
+                str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+            )
+            return int(value)
+
+        candidates = [
+            item for item in candidates
+            if get_assignment_number(item) == requested_number
+        ]
+
+    workflow_id = f"fawf-{uuid.uuid4().hex[:10]}"
+    selected = candidates[0] if len(candidates) == 1 else None
+
+    wf = {
+        "id": workflow_id,
+        "workflow_type": "file_assignment",
+        "status": "no_match" if not candidates else "waiting_confirmation",
+        "session_token": token,
+        "username": session.get("username"),
+        "course": course,
+        "folder_path": str(Path(folder).resolve()),
+        "request": {
+        "course": course,
+        "instruction": instruction,
+        "file_name": request.file_name,
+        },
+        "candidates": candidates,
+        "draft": None,
+        "missing_fields": [],
+        "clarification_question": None,
+        "error": None,
+        "result": None,
+    }
+
+    if selected:
+        wf["selected_file_name"] = selected["file_name"]
+        wf["draft"] = dict(selected)
+
+        start_date = wf["draft"].get("start_date")
+        inferred_week = None
+
+        if start_date:
+            try:
+                inferred_week = await asyncio.to_thread(
+                    _infer_assignment_destination_week,
+                    session,
+                    course,
+                    start_date,
+                )
+            except Exception as exc:
+                print(f"[FILE ASSIGNMENT] Week mapping could not be verified: {exc}")
+
+        wf["draft"]["week_number"] = inferred_week
+
+        if inferred_week is None:
+            wf["missing_fields"].append("week_number")
+            wf["clarification_question"] = (
+                "I could not match the assignment start date to a dated Moellim "
+                "week section. Which week should receive this assignment?"
+            )
+
+    elif not candidates:
+        wf["error"] = (
+            "No assignment document was found in the selected course folder. "
+            "Add a PDF, DOCX, or TXT assignment file and try again."
+        )
+
+    file_assignment_workflows[workflow_id] = wf
+    return file_assignment_public_state(wf)
+
+
+@app.get("/api/file-assignment-workflows")
+async def list_file_assignment_workflows(
+    authorization: Optional[str] = Header(None),
+):
+    token = get_session_token(authorization)
+    return [
+        file_assignment_public_state(wf)
+        for wf in file_assignment_workflows.values()
+        if wf.get("session_token") == token
+    ]
+
+
+@app.get("/api/file-assignment-workflows/{workflow_id}")
+async def get_file_assignment_workflow(
+    workflow_id: str,
+    authorization: Optional[str] = Header(None),
+):
+    wf = file_assignment_workflows.get(workflow_id)
+    verify_file_assignment_owner(wf, authorization)
+    return file_assignment_public_state(wf)
+
+
+@app.post("/api/file-assignment-workflows/{workflow_id}/confirm")
+async def confirm_file_assignment_metadata(
+    workflow_id: str,
+    request: ConfirmFileAssignmentRequest,
+    authorization: Optional[str] = Header(None),
+):
+    wf = file_assignment_workflows.get(workflow_id)
+    verify_file_assignment_owner(wf, authorization)
+
+    if wf.get("status") != "waiting_confirmation":
+        raise HTTPException(status_code=400, detail="This workflow is not waiting for confirmation.")
+
+    selected = next(
+        (
+            item for item in wf.get("candidates", [])
+            if item.get("file_name", "").casefold() == request.file_name.strip().casefold()
+        ),
+        None,
+    )
+    if not selected:
+        raise HTTPException(status_code=400, detail="Select an assignment file from the displayed candidates.")
+
+    prepared_draft = wf.get("draft") or {}
+    draft = dict(selected)
+
+    for field in ("title", "start_date", "due_date", "total_marks"):
+        value = getattr(request, field)
+        if value is not None:
+            draft[field] = value
+
+    if request.week_number is not None:
+        if request.week_number < 1:
+            raise HTTPException(status_code=400, detail="Week number must be positive.")
+        draft["week_number"] = request.week_number
+    elif (
+        prepared_draft.get("week_number") is not None
+        and draft.get("start_date") == selected.get("start_date")
+    ):
+        draft["week_number"] = prepared_draft["week_number"]
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail="Please confirm the destination week. The start date has no verified matching Moellim section.",
+        )
+
+    wf["selected_file_name"] = selected["file_name"]
+    wf["draft"] = draft
+    wf["missing_fields"] = []
+    wf["clarification_question"] = None
+    wf["status"] = "waiting_approval"
+
+    return file_assignment_public_state(wf)
+
+from pathlib import Path
+from datetime import datetime
+import re
+
+
+def _execute_file_assignment_sync(wf, session):
+    p = browser = context = page = None
+    resources = {}
+
+    try:
+        p = sync_playwright().start()
+        browser, context = automation.launch_browser(p)
+        page = context.new_page()
+        resources = {"p": p, "browser": browser, "context": context, "page": page}
+
+        moodle = automation.MoodleAutomation(page)
+        moodle.login(session.get("username"), session.get("password"))
+
+        course_info = moodle.discover_course(wf["course"])
+        if not isinstance(course_info, dict) or not course_info.get("href"):
+            raise RuntimeError("Could not rediscover the selected Moellim course.")
+
+        moodle.open_course(course_info)
+        moodle.ensure_edit_mode()
+
+        draft = dict(wf["draft"])
+        file_path = Path(draft.get("file_path") or "")
+        if not file_path.is_file():
+            raise FileNotFoundError("The selected assignment document is no longer available.")
+
+        if file_path.suffix.lower() not in {".pdf", ".docx", ".txt"}:
+            raise RuntimeError("Only PDF, DOCX and TXT assignment documents are supported.")
+
+        assignment_auto = assignment_automation.AssignmentAutomation(page)
+        match = re.search(r"[?&]id=(\d+)", page.url)
+        if not match:
+            raise RuntimeError("Could not verify the selected Moellim course.")
+
+        assignment_auto.course_id = match.group(1)
+        assignment_auto.course_url = page.url
+        assignment_auto.verify_course(wf["course"])
+
+        week = int(draft["week_number"])
+        section, info = assignment_auto.find_week_section(week)
+        if not section or not info:
+            raise RuntimeError(f"Week {week} could not be verified in Moellim.")
+
+        assignment_auto.section_num = info["num"]
+        draft["pdf_path"] = str(file_path)
+        draft["course"] = wf["course"]
+        before = assignment_auto.snapshot_before(draft)
+
+        assignment_auto.open_assignment_form(assignment_auto.section_num)
+
+        # Build a concise LMS description from extracted assignment metadata.
+        # Never send the full extracted document text to the LMS description.
+        title = str(draft.get("title") or draft.get("file_name") or "Assignment").strip()
+        marks_value = draft.get("total_marks")
+        clos_value = draft.get("clos") or []
+
+        if isinstance(clos_value, str):
+            clos_value = [item.strip() for item in clos_value.replace(",", " ").split() if item.strip()]
+
+        clos_text = ", ".join(str(item).strip() for item in clos_value if str(item).strip())
+        marks_text = str(marks_value).strip() if marks_value is not None else "Not specified"
+
+        draft["description"] = (
+            f"{title}\n\n"
+            f"Total Marks: {marks_text}\n\n"
+            f"Mapped CLO: {clos_text if clos_text else 'Not specified'}"
+        )
+
+        # Validate file-assignment marks before interacting with Moellim.
+        marks = normalize_assignment_marks(draft.get("total_marks"))
+        if marks is not None:
+            draft["max_grade"] = marks
+        else:
+            draft.pop("max_grade", None)
+
+        def parse_date(value, end_of_day=False):
+            if not value:
+                return None
+            for fmt in ("%d %B %Y", "%d %b %Y", "%Y-%m-%d",
+                        "%d/%m/%Y", "%m/%d/%Y"):
+                try:
+                    parsed = datetime.strptime(str(value).strip(), fmt)
+                    return parsed.replace(
+                        hour=23 if end_of_day else 0,
+                        minute=59 if end_of_day else 0
+                    )
+                except ValueError:
+                    continue
+            raise ValueError(f"Could not safely interpret assignment date: {value}")
+
+        start_date = parse_date(draft.get("start_date"))
+        due_date = parse_date(draft.get("due_date"), True)
+
+        if due_date is not None:
+            draft["duedate"] = due_date
+        else:
+            draft.pop("duedate", None)
+
+        assignment_auto.fill_assignment_settings(draft)
+
+        if start_date:
+            assignment_auto.set_date("allowsubmissionsfromdate", start_date)
+        assignment_auto.verify_attachment(file_path)
+        assignment_auto.save_assignment()
+        assignment_auto.verify_saved(draft, before)
+
+        return {
+            "success": True,
+            "course": wf["course"],
+            "week_number": week,
+            "title": draft.get("title"),
+            "file_name": file_path.name,
+            "message": "Assignment saved and verification completed in Moellim."
+        }
+
+    finally:
+        if resources:
+            close_playwright_resources(resources)
+        elif p:
+            try:
+                p.stop()
+            except Exception:
+                pass
+
+
+@app.post("/api/file-assignment-workflows/{workflow_id}/approve")
+async def approve_file_assignment_workflow(
+    workflow_id: str,
+    authorization: Optional[str] = Header(None),
+):
+    wf = file_assignment_workflows.get(workflow_id)
+    verify_file_assignment_owner(wf, authorization)
+
+    if wf.get("status") != "waiting_approval":
+        raise HTTPException(status_code=409, detail="Workflow is not awaiting approval.")
+
+    wf["status"] = "approved"
+    return file_assignment_public_state(wf)
+
+
+@app.post("/api/file-assignment-workflows/{workflow_id}/execute")
+async def execute_file_assignment_workflow(
+    workflow_id: str,
+    authorization: Optional[str] = Header(None),
+):
+    wf = file_assignment_workflows.get(workflow_id)
+    session = verify_file_assignment_owner(wf, authorization)
+
+    if wf.get("status") != "approved":
+        raise HTTPException(status_code=409, detail="Approve this assignment before execution.")
+
+    wf["status"] = "running"
+
+    try:
+        result = await asyncio.to_thread(
+            _execute_file_assignment_sync, wf, session
+        )
+        wf["result"] = result
+        wf["status"] = "completed"
+        return file_assignment_public_state(wf)
+
+    except Exception as exc:
+        traceback.print_exc()
+        wf["status"] = "failed"
+        wf["error"] = str(exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/file-assignment-workflows/{workflow_id}/reject")
+async def reject_file_assignment_workflow(
+    workflow_id: str,
+    authorization: Optional[str] = Header(None),
+):
+    wf = file_assignment_workflows.get(workflow_id)
+    verify_file_assignment_owner(wf, authorization)
+
+    if wf.get("status") not in {"waiting_approval", "approved"}:
+        raise HTTPException(
+            status_code=409,
+            detail="This file assignment cannot be rejected in its current state."
+        )
+
+    wf["status"] = "rejected"
+    wf["error"] = "Rejected by teacher."
+    return file_assignment_public_state(wf)
+
