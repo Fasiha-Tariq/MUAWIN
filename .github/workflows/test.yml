@@ -61,5 +61,13 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
 
+      - name: Set up Python for E2E backend
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install backend dependencies for E2E
+        run: pip install -r backend/requirements.txt
+
       - name: Run E2E tests (Playwright)
         run: npx playwright test
