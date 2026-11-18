@@ -277,28 +277,32 @@ def record_upload(teacher: str, course: str, week: Optional[int], item_type: str
     try:
         _ensure()
         now = datetime.now()
+        ckey = course_key(course)
         with _db() as db:
             db.execute("""INSERT INTO ai_upload_history
                 (teacher,course_key,course,week,item_type,title,file_name,weekday,uploaded_at)
                 VALUES(?,?,?,?,?,?,?,?,?)""",
-                (teacher.strip(), course_key(course), course, week, item_type, title[:255],
+                (teacher.strip(), ckey, course, week, item_type, title[:255],
                  file_name[:255], now.weekday(), now.replace(tzinfo=timezone.utc).isoformat()))
             if week is not None:
-                db.execute("UPDATE reminders SET status='completed',updated_at=? WHERE teacher=? AND course_key=? AND week=? AND status IN ('active','snoozed')",
-                           (_now(), teacher.strip(), course_key(course), int(week)))
+                # Resolve missing-lecture reminders for all teachers enrolled in this course.
+                db.execute("""
+                    UPDATE reminders
+                    SET status='completed', updated_at=?
+                    WHERE course_key=? AND week=? AND status IN ('active','snoozed')
+                """, (_now(), ckey, int(week)))
 
-                # Mark the matching expected lecture as completed.
+                # Mark the matching expected lecture as completed across co-teachers in the course.
                 # Assignment uploads must not change lecture progress.
                 if item_type == "lecture":
                     db.execute("""
                         UPDATE weekly_expectations
                         SET status='completed', uploaded_at=?
-                        WHERE teacher=? AND course_key=? AND week=?
+                        WHERE course_key=? AND week=?
                           AND COALESCE(status, 'pending') <> 'not_expected'
                     """, (
                         now.replace(tzinfo=timezone.utc).isoformat(),
-                        teacher.strip(),
-                        course_key(course),
+                        ckey,
                         int(week)
                     ))
         record_event(teacher, f"{item_type}_uploaded", "success", course,
@@ -326,7 +330,6 @@ def save_clo_mapping(teacher: str, course: str, week: Optional[int], item_type: 
         return False
 
 
-
 def _ensure_setup_lifecycle_columns(db):
     columns = {row["name"] for row in db.execute("PRAGMA table_info(course_setup)")}
     for name, definition in (
@@ -351,15 +354,23 @@ def _refresh_setup_completion(teacher: str, course: str) -> bool:
             if not row:
                 return False
             outline = db.execute(
-                "SELECT 1 FROM ai_course_outline WHERE teacher=? AND course_key=?",
-                (str(teacher).strip(), key)
+                "SELECT 1 FROM ai_course_outline WHERE course_key=? LIMIT 1",
+                (key,)
             ).fetchone()
             slots = db.execute(
-                "SELECT 1 FROM ai_class_schedule WHERE teacher=? AND course_key=? LIMIT 1",
-                (str(teacher).strip(), key)
+                "SELECT 1 FROM ai_class_schedule WHERE course_key=? LIMIT 1",
+                (key,)
             ).fetchone()
             folder = row["folder_path"]
-            complete = bool(outline and slots and row["timetable_confirmed"]
+            has_timetable = bool(
+                row["timetable_confirmed"]
+                or db.execute(
+                    "SELECT 1 FROM course_setup WHERE course_key=? AND timetable_confirmed=1 LIMIT 1",
+                    (key,)
+                ).fetchone()
+                or slots
+            )
+            complete = bool(outline and slots and has_timetable
                             and folder and Path(folder).is_dir())
             if complete:
                 db.execute("""
@@ -383,7 +394,7 @@ def set_moellim_setup_status(teacher: str, course: str,
             db.execute("""
                 UPDATE course_setup
                 SET outline_status_ready=?, schedule_status_ready=?, updated_at=?
-                WHERE teacher=? AND course_key=? AND setup_completed=1
+                WHERE teacher=? AND course_key=?
             """, (int(bool(outline_ready)), int(bool(schedule_ready)), _now(),
                   str(teacher).strip(), course_key(course)))
         return True
@@ -451,6 +462,57 @@ def get_outline(teacher: str, course: str) -> Optional[Dict[str, Any]]:
     except Exception as exc:
         print(f"[AI-DB] get_outline failed: {exc}")
         return None
+
+
+def get_shared_course_outline(teacher: str, course: str) -> Optional[Dict[str, Any]]:
+    """Return this teacher's outline, or mirror an existing co-teacher's outline for the same course_key."""
+    own = get_outline(teacher, course)
+    if own:
+        return own
+    try:
+        _ensure()
+        ckey = course_key(course)
+        with _db() as db:
+            row = db.execute(
+                """SELECT teacher, data, source_name, title
+                   FROM ai_course_outline
+                   WHERE course_key=?
+                   ORDER BY uploaded_at DESC LIMIT 1""",
+                (ckey,)
+            ).fetchone()
+            if not row:
+                return None
+
+            data = json.loads(row["data"])
+            data.setdefault("title", row["title"] or course)
+            data["source"] = row["source_name"] or data.get("source", "")
+            data["shared_from_teacher"] = row["teacher"]
+
+            db.execute("""INSERT INTO ai_course_outline
+              (teacher,course_key,course,title,source_name,data,uploaded_at) VALUES(?,?,?,?,?,?,?)
+              ON CONFLICT(teacher,course_key) DO NOTHING""",
+              (teacher.strip(), ckey, course, (row["title"] or "")[:255],
+               (row["source_name"] or "")[:255], row["data"], _now()))
+
+            db.execute("""INSERT INTO course_setup (teacher,course_key,course,outline_confirmed,updated_at)
+                VALUES (?,?,?,1,?) ON CONFLICT(teacher,course_key) DO UPDATE SET
+                outline_confirmed=1, updated_at=excluded.updated_at""",
+                (teacher.strip(), ckey, course, _now()))
+
+            db.execute("""
+                INSERT OR IGNORE INTO weekly_expectations
+                  (teacher, course_key, course, week, expected_topic, due_date, status, source, uploaded_at, notes)
+                SELECT ?, course_key, ?, week, expected_topic, due_date, status, source, uploaded_at, notes
+                FROM weekly_expectations
+                WHERE course_key=? AND teacher=?
+            """, (teacher.strip(), course, ckey, row["teacher"]))
+
+        _refresh_setup_completion(teacher, course)
+        return data
+    except Exception as exc:
+        print(f"[AI-DB] get_shared_course_outline failed: {exc}")
+        return None
+
 
 def list_outlines(teacher: str) -> List[Dict[str, Any]]:
     try:
@@ -522,6 +584,41 @@ def get_schedule(teacher: str, course: str) -> List[Dict[str, Any]]:
         print(f"[AI-DB] get_schedule failed: {exc}")
         return []
 
+
+def get_shared_schedule(teacher: str, course: str) -> List[Dict[str, Any]]:
+    """Return this teacher's class schedule, or fall back to a co-teacher's saved schedule for the course."""
+    own = get_schedule(teacher, course)
+    if own:
+        return own
+    try:
+        _ensure()
+        ckey = course_key(course)
+        with _db() as db:
+            other = db.execute(
+                "SELECT teacher FROM ai_class_schedule WHERE course_key=? LIMIT 1",
+                (ckey,)
+            ).fetchone()
+            if not other:
+                return []
+            rows = db.execute(
+                """SELECT weekday, start_time, end_time, auto_lecture, auto_assignment
+                   FROM ai_class_schedule
+                   WHERE course_key=? AND teacher=?
+                   ORDER BY weekday, start_time""",
+                (ckey, other["teacher"])
+            ).fetchall()
+        return [{
+            "weekday": r["weekday"],
+            "start_time": r["start_time"],
+            "end_time": r["end_time"],
+            "auto_lecture": bool(r["auto_lecture"]),
+            "auto_assignment": bool(r["auto_assignment"]),
+        } for r in rows]
+    except Exception as exc:
+        print(f"[AI-DB] get_shared_schedule failed: {exc}")
+        return []
+
+
 def learned_upload_days(teacher: str, course: str) -> List[int]:
     try:
         _ensure()
@@ -592,6 +689,14 @@ def get_semester_current_week(teacher: str, course: str) -> Optional[int]:
         setup = get_course_setup(teacher, course)
         started = setup.get("semester_started_at")
         if not started:
+            ckey = course_key(course)
+            with _db() as db:
+                row = db.execute(
+                    "SELECT semester_started_at FROM course_setup WHERE course_key=? AND semester_started_at IS NOT NULL ORDER BY semester_started_at ASC LIMIT 1",
+                    (ckey,)
+                ).fetchone()
+            started = row["semester_started_at"] if row else None
+        if not started:
             return None
         start = datetime.fromisoformat(str(started).replace("Z", "+00:00"))
         if start.tzinfo is None:
@@ -631,17 +736,17 @@ def save_expectations(teacher: str, course: str, weeks: List[Dict[str, Any]]) ->
         return False
 
 def get_active_lecture_uploads(teacher: str, course: str) -> List[Dict[str, Any]]:
-    """Return active, week-scoped lecture records for live Moellim verification."""
+    """Return active, week-scoped lecture records across all co-teachers in the course."""
     try:
         _ensure()
         with _db() as db:
             rows = db.execute("""
-                SELECT id, week, title, file_name
+                SELECT id, teacher, week, title, file_name
                 FROM ai_upload_history
-                WHERE teacher=? AND course_key=? AND item_type='lecture'
+                WHERE course_key=? AND item_type='lecture'
                   AND week IS NOT NULL AND COALESCE(is_active, 1)=1
                 ORDER BY id
-            """, (teacher.strip(), course_key(course))).fetchall()
+            """, (course_key(course),)).fetchall()
         return [dict(row) for row in rows]
     except Exception as exc:
         print(f"[AI-DB] get_active_lecture_uploads failed: {exc}")
@@ -649,14 +754,15 @@ def get_active_lecture_uploads(teacher: str, course: str) -> List[Dict[str, Any]
 
 
 def mark_lecture_upload_missing(teacher: str, course: str, upload_id: int) -> bool:
-    """Deactivate one confirmed-missing record; preserve history and other uploads."""
+    """Deactivate one confirmed-missing record for the course; preserve history and other uploads."""
     try:
         _ensure()
+        ckey = course_key(course)
         with _db() as db:
             row = db.execute("""
                 SELECT id, week FROM ai_upload_history
-                WHERE id=? AND teacher=? AND course_key=? AND item_type='lecture'
-            """, (int(upload_id), teacher.strip(), course_key(course))).fetchone()
+                WHERE id=? AND course_key=? AND item_type='lecture'
+            """, (int(upload_id), ckey)).fetchone()
             if not row:
                 return False
 
@@ -666,25 +772,24 @@ def mark_lecture_upload_missing(teacher: str, course: str, upload_id: int) -> bo
             )
             remaining = db.execute("""
                 SELECT COUNT(*) AS total FROM ai_upload_history
-                WHERE teacher=? AND course_key=? AND week=?
+                WHERE course_key=? AND week=?
                   AND item_type='lecture' AND COALESCE(is_active, 1)=1
-            """, (teacher.strip(), course_key(course), row["week"])).fetchone()["total"]
+            """, (ckey, row["week"])).fetchone()["total"]
 
             if not remaining:
                 db.execute("""
                     UPDATE weekly_expectations
                     SET status='pending', uploaded_at=NULL
-                    WHERE teacher=? AND course_key=? AND week=?
+                    WHERE course_key=? AND week=?
                       AND COALESCE(status, 'pending') <> 'not_expected'
-                """, (teacher.strip(), course_key(course), row["week"]))
+                """, (ckey, row["week"]))
 
-                dedupe = f"{course_key(course)}-missed-lecture-week-{row['week']}"
                 db.execute("""
                     UPDATE reminders
                     SET status='active', snoozed_until=NULL, updated_at=?
-                    WHERE teacher=? AND dedupe_key=?
+                    WHERE course_key=? AND week=?
                       AND status IN ('resolved', 'completed')
-                """, (_now(), teacher.strip(), dedupe))
+                """, (_now(), ckey, row["week"]))
         return True
     except Exception as exc:
         print(f"[AI-DB] mark_lecture_upload_missing failed: {exc}")
@@ -692,39 +797,51 @@ def mark_lecture_upload_missing(teacher: str, course: str, upload_id: int) -> bo
 
 
 def weekly_progress(teacher: str, course: str) -> List[Dict[str, Any]]:
+    """Return course-wide weekly progress shared across all teachers enrolled in the same course."""
     try:
         _ensure()
+        ckey = course_key(course)
         with _db() as db:
-            expected = db.execute("""
-                SELECT week, expected_topic, due_date, status
+            expected_rows = db.execute("""
+                SELECT teacher, week, expected_topic, due_date, status
                 FROM weekly_expectations
-                WHERE teacher=? AND course_key=?
-                ORDER BY week
-            """, (teacher.strip(), course_key(course))).fetchall()
+                WHERE course_key=?
+                ORDER BY CASE WHEN teacher=? THEN 0 ELSE 1 END, week
+            """, (ckey, teacher.strip())).fetchall()
+
+            expected_by_week: Dict[int, Dict[str, Any]] = {}
+            for r in expected_rows:
+                w = int(r["week"])
+                if w not in expected_by_week:
+                    expected_by_week[w] = dict(r)
 
             uploads = db.execute("""
-                SELECT week, item_type, MAX(uploaded_at) uploaded_at
+                SELECT week, item_type, MAX(uploaded_at) AS uploaded_at
                 FROM ai_upload_history
-                WHERE teacher=? AND course_key=?
+                WHERE course_key=?
                   AND COALESCE(is_active, 1)=1
                 GROUP BY week, item_type
-            """, (teacher.strip(), course_key(course))).fetchall()
+            """, (ckey,)).fetchall()
 
         done = {(r["week"], r["item_type"]): r["uploaded_at"] for r in uploads}
+        all_weeks = sorted(
+            set(expected_by_week.keys()) | {int(w) for (w, _) in done.keys() if w is not None}
+        )
+
         out = []
-        for r in expected:
-            w = r["week"]
+        for w in all_weeks:
+            r = expected_by_week.get(w, {})
             uploaded = done.get((w, "lecture"))
-            is_expected = r["status"] != "not_expected"
+            is_expected = r.get("status") != "not_expected"
             out.append({
                 "week": w,
-                "topic": r["expected_topic"],
-                "due_date": r["due_date"],
+                "topic": r.get("expected_topic", ""),
+                "due_date": r.get("due_date"),
                 "expected": is_expected,
                 "lecture_completed": bool(uploaded),
                 "uploaded_at": uploaded,
                 "assignment_completed": bool(done.get((w, "assignment"))),
-                "status": "completed" if uploaded else "pending"
+                "status": "completed" if uploaded else "pending",
             })
         return out
     except Exception as exc:
@@ -732,33 +849,54 @@ def weekly_progress(teacher: str, course: str) -> List[Dict[str, Any]]:
         return []
 
 
-def create_missing_reminders(teacher: str, course: str, current_week: Optional[int] = None, live_uploaded_weeks: Optional[List[int]] = None) -> int:
-    """Maintain one recurring reminder per overdue, incomplete expected lecture."""
+def create_missing_reminders(
+    teacher: str,
+    course: str,
+    current_week: Optional[int] = None,
+    live_uploaded_weeks: Optional[List[int]] = None,
+) -> int:
+    """Create/keep active reminders for all weeks 1..current_week with no lecture uploaded on Moellim."""
     progress = weekly_progress(teacher, course)
     created = 0
-    today = datetime.now().date()
     live_uploaded_set = {
         int(week) for week in (live_uploaded_weeks or [])
         if week is not None
     }
 
-    # No lecture/resource exists in any live weekly section: do not create reminders.
-    if not live_uploaded_set:
+    # Determine the effective current week to check across
+    effective_current_week = current_week
+    if effective_current_week is None:
+        effective_current_week = get_semester_current_week(teacher, course)
+    if effective_current_week is None and live_uploaded_set:
+        effective_current_week = max(live_uploaded_set)
+    if effective_current_week is None:
         return 0
 
-    uploaded_weeks = [
-        int(row["week"]) for row in progress
-        if row.get("lecture_completed") and row.get("week") is not None
-    ]
-    uploaded_weeks.extend(live_uploaded_set)
-    latest_uploaded_week = max(uploaded_weeks) if uploaded_weeks else None
+    effective_current_week = int(effective_current_week)
+    progress_by_week = {int(row["week"]): row for row in progress if row.get("week") is not None}
+
+    # Check every week from Week 1 through effective_current_week (plus any stored weeks to clean up future ones)
+    weeks_to_check = sorted(
+        set(range(1, effective_current_week + 1)) | set(progress_by_week.keys())
+    )
 
     try:
         with _db() as db:
-            for row in progress:
-                week = int(row["week"])
+            for week in weeks_to_check:
+                row = progress_by_week.get(week, {})
                 dedupe = f"{course_key(course)}-missed-lecture-week-{week}"
 
+                # 1. Resolve any reminder for weeks beyond the current week
+                if week > effective_current_week:
+                    db.execute("""
+                        UPDATE reminders
+                        SET status='resolved', snoozed_until=NULL, updated_at=?
+                        WHERE teacher=? AND dedupe_key=?
+                          AND status IN ('active', 'snoozed')
+                    """, (_now(), teacher.strip(), dedupe))
+                    continue
+
+                # 2. If live Moellim scan confirms a lecture exists in this week, resolve any reminder
                 if week in live_uploaded_set:
                     db.execute("""
                         UPDATE reminders
@@ -768,53 +906,33 @@ def create_missing_reminders(teacher: str, course: str, current_week: Optional[i
                     """, (_now(), teacher.strip(), dedupe))
                     continue
 
-                if row["lecture_completed"]:
-                    db.execute("""
-                        UPDATE reminders
-                        SET status='resolved', snoozed_until=NULL, updated_at=?
-                        WHERE teacher=? AND dedupe_key=?
-                          AND status NOT IN ('resolved')
-                    """, (_now(), teacher.strip(), dedupe))
+                if row and row.get("expected") is False:
                     continue
 
-                if not row["expected"]:
-                    continue
-
-                overdue = False
-                if current_week is not None:
-                    overdue = week < int(current_week)
-
-                if latest_uploaded_week is not None and week <= latest_uploaded_week:
-                    overdue = True
-
-                if row.get("due_date"):
-                    try:
-                        due = datetime.fromisoformat(
-                            str(row["due_date"]).replace("Z", "+00:00")
-                        ).date()
-                        overdue = overdue or due < today
-                    except Exception:
-                        try:
-                            due = datetime.strptime(
-                                str(row["due_date"])[:10], "%Y-%m-%d"
-                            ).date()
-                            overdue = overdue or due < today
-                        except Exception:
-                            pass
-
-                if not overdue:
-                    continue
+                topic = (row.get("topic") or "").strip()
+                topic_suffix = f" ({topic})" if topic and topic != "To be confirmed" else ""
+                title = f"Lecture missing - Week {week}"
+                message = f"No lecture has been uploaded yet for Week {week}{topic_suffix}."
 
                 existing = db.execute("""
-                    SELECT id, status, updated_at FROM reminders
+                    SELECT id, status FROM reminders
                     WHERE teacher=? AND dedupe_key=?
                 """, (teacher.strip(), dedupe)).fetchone()
 
                 if existing:
-                    status = str(existing["status"] or "")
-                    updated_date = str(existing["updated_at"] or "")[:10]
-                    # Keep acknowledged/dismissed history closed.
-                    # Never reactivate the same weekly reminder on refresh.
+                    if existing["status"] in ("resolved", "completed"):
+                        db.execute("""
+                            UPDATE reminders
+                            SET status='active', title=?, message=?, snoozed_until=NULL, updated_at=?
+                            WHERE id=?
+                        """, (title, message, _now(), existing["id"]))
+                        created += 1
+                    elif existing["status"] in ("active", "snoozed"):
+                        db.execute("""
+                            UPDATE reminders
+                            SET title=?, message=?, updated_at=?
+                            WHERE id=?
+                        """, (title, message, _now(), existing["id"]))
                     continue
 
                 cur = db.execute("""
@@ -824,9 +942,7 @@ def create_missing_reminders(teacher: str, course: str, current_week: Optional[i
                     VALUES(?,?,?,?,?,?,'active',?,?,?,?)
                 """, (
                     teacher.strip(), course_key(course), course, week,
-                    f"Lecture missing - Week {week}",
-                    f"The expected lecture for Week {week} ({row['topic']}) has not been recorded as uploaded.",
-                    row.get("due_date"), _now(), _now(), dedupe
+                    title, message, row.get("due_date"), _now(), _now(), dedupe
                 ))
                 created += cur.rowcount
 
@@ -922,13 +1038,19 @@ def list_events(teacher: str, limit: int = 200) -> List[Dict[str, Any]]:
 
 def get_readiness(teacher: str, course: str) -> Dict[str, Any]:
     setup=get_course_setup(teacher,course)
-    outline=get_outline(teacher,course)
+    outline=get_shared_course_outline(teacher,course)
     progress=weekly_progress(teacher,course)
-    class_schedule=get_schedule(teacher,course)
+    class_schedule=get_shared_schedule(teacher,course)
+    ckey = course_key(course)
+    with _db() as db:
+        shared_timetable = db.execute(
+            "SELECT 1 FROM course_setup WHERE course_key=? AND timetable_confirmed=1 LIMIT 1",
+            (ckey,)
+        ).fetchone()
     completed = bool(setup.get("setup_completed"))
     return {"course":course,"setup_completed":completed,
             "outline_ready":bool(outline),
-            "timetable_ready":bool(setup.get("timetable_confirmed")),
+            "timetable_ready":bool(setup.get("timetable_confirmed") or shared_timetable or class_schedule),
             "class_schedule_ready":bool(class_schedule),
             "folder_ready":bool(setup.get("folder_path") and Path(setup["folder_path"]).is_dir()),
             "expected_weeks":len(progress),
@@ -960,4 +1082,3 @@ def save_course_document_paths(teacher: str, course: str,
     except Exception as exc:
         print(f"[AI-DB] save_course_document_paths failed: {exc}")
         return False
-

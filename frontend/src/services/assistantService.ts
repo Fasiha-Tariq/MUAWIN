@@ -34,7 +34,8 @@ export interface InterpretationResult {
    * Used by workflowService.ts and AppContext.tsx
    * to route the workflow to the correct backend.
    */
-  workflowType: 'lecture' | 'assignment' | string;
+  workflowType: 'lecture' | 'assignment' | 'file_assignment' | string;
+  assignmentMode?: 'existing_file_upload' | 'generate_new' | 'not_applicable';
 }
 
 /**
@@ -43,7 +44,8 @@ export interface InterpretationResult {
 interface BackendInterpretation {
   intent: string;
 
-  workflow_type?: 'lecture' | 'assignment' | 'multi' | string;
+  workflow_type?: 'lecture' | 'assignment' | 'file_assignment' | 'multi' | string;
+  assignment_mode?: 'existing_file_upload' | 'generate_new' | 'not_applicable';
 
   /**
    * Backend may provide an action-specific instruction.
@@ -100,8 +102,8 @@ function isBackendMultiAction(
 ): result is BackendMultiActionInterpretation {
   return (
     result.workflow_type === 'multi' ||
-    result.is_multi_action === true ||
-    Array.isArray(result.actions)
+    ('is_multi_action' in result && result.is_multi_action === true) ||
+    ('actions' in result && Array.isArray(result.actions))
   );
 }
 
@@ -129,7 +131,20 @@ function normalizeBackendInterpretation(
         : 'lecture'
     );
 
+  const assignmentMode =
+    result.assignment_mode ||
+    (workflowType === 'file_assignment'
+      ? 'existing_file_upload'
+      : workflowType === 'assignment'
+        ? 'generate_new'
+        : 'not_applicable');
+
+  const isFileAssignment =
+    workflowType === 'file_assignment' ||
+    assignmentMode === 'existing_file_upload';
+
   const isAssignment =
+    !isFileAssignment &&
     workflowType === 'assignment';
 
   /**
@@ -145,7 +160,7 @@ function normalizeBackendInterpretation(
   const courseCode =
     activeCourse?.code ||
     result.course ||
-    'CS7 — PDC';
+    'CS7 - PDC';
 
   const courseId =
     activeCourse?.id ||
@@ -189,6 +204,7 @@ function normalizeBackendInterpretation(
    */
   const isUpload =
     !isAssignment &&
+    !isFileAssignment &&
     (
       result.intent
         ?.toLowerCase()
@@ -205,19 +221,21 @@ function normalizeBackendInterpretation(
    */
   let suggestedTitle: string;
 
-  if (isAssignment) {
+  if (isFileAssignment) {
+    suggestedTitle = 'Upload Existing Assignment Document';
+  } else if (isAssignment) {
     suggestedTitle =
       result.title ||
       `${courseCode}: Assignment${
         week
-          ? ` — Week ${week}`
+          ? ` - Week ${week}`
           : ''
       }`;
   } else if (isUpload) {
     suggestedTitle =
       `${courseCode}: ${lecture}${
         week
-          ? ` — Week ${week}`
+          ? ` - Week ${week}`
           : ''
       }`;
   } else {
@@ -234,7 +252,46 @@ function normalizeBackendInterpretation(
    * ------------------------------------------------------
    */
   const suggestedSteps: WorkflowStep[] =
-    isAssignment
+    isFileAssignment
+      ? [
+          {
+            id: 1,
+            title: 'Find existing assignment document',
+            description: 'Search only the selected course folder for an existing PDF, DOCX or TXT file',
+            status: 'in_progress',
+          },
+          {
+            id: 2,
+            title: 'Extract assignment details',
+            description: 'Extract available dates, week, marks, CLOs, instructions and rubric',
+            status: 'pending',
+          },
+          {
+            id: 3,
+            title: 'Confirm missing details',
+            description: 'Ask the teacher about missing or ambiguous information',
+            status: 'pending',
+          },
+          {
+            id: 4,
+            title: 'Teacher Approval',
+            description: 'Show the complete preview and wait for teacher approval',
+            status: 'pending',
+          },
+          {
+            id: 5,
+            title: 'Upload original assignment document',
+            description: 'Attach the original file to the selected Moellim course and week',
+            status: 'pending',
+          },
+          {
+            id: 6,
+            title: 'Verify assignment upload',
+            description: 'Verify assignment settings and the attached original document',
+            status: 'pending',
+          },
+        ]
+      : isAssignment
       ? [
           {
             id: 1,
@@ -387,9 +444,11 @@ function normalizeBackendInterpretation(
       (
         result.intent ||
         (
-          isAssignment
-            ? 'Create Assignment'
-            : 'Upload Lecture Notes'
+          isFileAssignment
+            ? 'Upload Existing Assignment'
+            : isAssignment
+              ? 'Create Assignment'
+              : 'Upload Lecture Notes'
         )
       ) as ActionType,
 
@@ -399,9 +458,11 @@ function normalizeBackendInterpretation(
     detectedActionsList: [
       result.intent ||
         (
-          isAssignment
-            ? 'Create Assignment'
-            : 'Workflow'
+          isFileAssignment
+            ? 'Upload Existing Assignment'
+            : isAssignment
+              ? 'Create Assignment'
+              : 'Workflow'
         ),
     ],
 
@@ -412,16 +473,20 @@ function normalizeBackendInterpretation(
     courseId,
 
     source:
-      isAssignment
-        ? 'MUAWIN Backend — Assignment Workflow'
-        : 'MUAWIN Backend',
+      isFileAssignment
+        ? 'MUAWIN Backend - Existing Assignment File Workflow'
+        : isAssignment
+          ? 'MUAWIN Backend - Assignment Workflow'
+          : 'MUAWIN Backend',
 
     action:
       result.intent ||
       (
-        isAssignment
-          ? 'Create Assignment'
-          : instruction
+        isFileAssignment
+          ? 'Upload Existing Assignment'
+          : isAssignment
+            ? 'Create Assignment'
+            : instruction
       ),
 
     confidence:
@@ -447,6 +512,8 @@ function normalizeBackendInterpretation(
 
     workflowType,
 
+    assignmentMode,
+
     /**
      * Payload used by workflowService.ts
      * and AppContext.tsx.
@@ -463,6 +530,8 @@ function normalizeBackendInterpretation(
        * This determines the backend workflow route.
        */
       workflowType,
+
+      assignmentMode,
 
       course:
         courseName,
@@ -546,8 +615,10 @@ export const assistantService = {
       await api.post<BackendResponse>(
         '/assistant/interpret',
         {
-          instruction:
-            trimmedInstruction,
+          instruction: trimmedInstruction,
+          course: activeCourse?.title || null,
+          course_id: activeCourse?.id || null,
+          course_code: activeCourse?.code || null,
         }
       );
 
@@ -676,9 +747,7 @@ export const assistantService = {
        * /assignment-workflows/prepare
        */
       workflowType:
-        interp.workflowType as
-          | 'lecture'
-          | 'assignment',
+        interp.workflowType as any,
 
       courseId:
         interp.courseId,
@@ -712,7 +781,7 @@ export const assistantService = {
           interp.intent,
 
         course:
-          `${interp.courseCode} — ${interp.courseName}`,
+          `${interp.courseCode} - ${interp.courseName}`,
 
         source:
           interp.source,

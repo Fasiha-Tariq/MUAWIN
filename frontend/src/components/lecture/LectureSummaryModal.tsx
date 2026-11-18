@@ -97,10 +97,10 @@ export const LectureSummaryModal: React.FC<LectureSummaryModalProps> = ({
             <div className="flex items-center justify-between">
               <h4 className="font-bold text-slate-900 text-xs flex items-center gap-1.5">
                 <Sparkles className="w-4 h-4 text-blue-600" />
-                <span>Human-In-The-Loop Verification Checklist</span>
+                <span>Teacher Verification Checklist</span>
               </h4>
               <span className="text-[10px] font-bold text-blue-700 bg-blue-100 px-2 py-0.5 rounded">
-                Supervised Protocol
+                Teacher Review
               </span>
             </div>
             <p className="text-slate-600 leading-relaxed text-[11px]">

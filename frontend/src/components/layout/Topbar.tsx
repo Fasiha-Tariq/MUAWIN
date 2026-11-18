@@ -2,13 +2,8 @@ import React, { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { 
   Menu, 
-  Sparkles, 
   Bell, 
-  Mic2, 
-  Search, 
-  ShieldCheck, 
   LogOut, 
-  ExternalLink,
   ChevronDown,
   BookOpen,
   Check
@@ -26,14 +21,19 @@ export const Topbar: React.FC<TopbarProps> = ({ onOpenMobileMenu }) => {
   const [profileOpen, setProfileOpen] = useState(false);
   const [courseDropdownOpen, setCourseDropdownOpen] = useState(false);
 
+  const isConnected = Boolean(user?.moellimConnected && !demoMode);
+
   // Derive human readable page title
   const getPageInfo = () => {
     const path = location.pathname;
     if (path.startsWith('/dashboard')) return { title: 'Academic Dashboard', subtitle: 'Overview of courses and pending approvals' };
     if (path.startsWith('/assistant')) return { title: 'AI Assistant — Command Mode', subtitle: 'Direct natural-language & voice instruction command center' };
     if (path.startsWith('/lecture')) return { title: 'Class Mode — Lecture Session', subtitle: 'Live classroom audio capture, transcription & academic insight extraction' };
+    if (path.startsWith('/setup')) return { title: 'Course Setup', subtitle: 'Configure course materials and weekly structure' };
+    if (path.startsWith('/tracker')) return { title: 'Weekly Tracker', subtitle: 'Monitor weekly lectures' };
+    if (path.startsWith('/reminders')) return { title: 'Reminders', subtitle: 'Scheduled alerts and upcoming deadlines' };
     if (path.startsWith('/approvals')) return { title: 'Pending Approvals', subtitle: 'Review and authorize automated actions before execution' };
-    if (path.startsWith('/workflows')) return { title: 'Workflow Management', subtitle: 'Active, queued and completed execution pipelines' };
+   // if (path.startsWith('/workflows')) return { title: 'Workflow Management', subtitle: 'Active, queued and completed execution pipelines' };
     if (path.startsWith('/logs')) return { title: 'Activity Logs', subtitle: 'Audited log of all agentic actions executed on Moellim' };
     if (path.startsWith('/settings')) return { title: 'System Settings', subtitle: 'Preferences, transcription configuration, and Moellim adapter' };
     if (path.startsWith('/help')) return { title: 'Help & Documentation', subtitle: 'User guide, workflow specifications, and system FAQs' };
@@ -49,7 +49,7 @@ export const Topbar: React.FC<TopbarProps> = ({ onOpenMobileMenu }) => {
         <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
           <button
             onClick={onOpenMobileMenu}
-            className="md:hidden p-2 -ml-1 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors"
+            className="md:hidden p-2 -ml-1 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
             aria-label="Open mobile navigation menu"
           >
             <Menu className="w-5 h-5" />
@@ -70,20 +70,24 @@ export const Topbar: React.FC<TopbarProps> = ({ onOpenMobileMenu }) => {
           </div>
         </div>
 
-        {/* Center / Right: Responsive Controls */}
-        <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
-          {/* Active Course Selector (Tablet & Desktop only; on mobile it stays in page content) */}
+        {/* Right: Course Selector, Notifications & Profile */}
+        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          {/* Active Course Selector */}
           {courses.length > 0 && (
             <div className="relative hidden sm:block">
               <button
                 onClick={() => setCourseDropdownOpen(!courseDropdownOpen)}
-                className="flex items-center gap-2 px-2.5 sm:px-3 py-1.5 text-xs font-semibold text-slate-800 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl transition-all shadow-2xs"
+                className="flex items-center gap-2 px-2.5 sm:px-3 py-1.5 text-xs font-semibold text-slate-800 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl transition-all shadow-2xs cursor-pointer"
                 title="Active course context for all MUAWIN workflows"
               >
                 <BookOpen className="w-3.5 h-3.5 text-blue-600 shrink-0" />
                 <div className="text-left hidden lg:block">
                   <span className="text-[10px] text-slate-400 uppercase font-bold block leading-tight">Active Course</span>
-                  <span className="font-bold text-slate-900">{selectedCourse ? `${selectedCourse.code} (${selectedCourse.section})` : 'Select Course'}</span>
+                  <span className="font-bold text-slate-900">
+                    {selectedCourse
+                      ? `${selectedCourse.code}${selectedCourse.section ? ` (${selectedCourse.section})` : ''}`
+                      : 'Select Course'}
+                  </span>
                 </div>
                 <div className="lg:hidden font-bold text-slate-900">
                   {selectedCourse?.code || 'Course'}
@@ -98,7 +102,7 @@ export const Topbar: React.FC<TopbarProps> = ({ onOpenMobileMenu }) => {
                 >
                   <div className="px-3.5 py-2 border-b border-slate-100">
                     <p className="font-bold text-slate-900 text-xs">Your Assigned Courses</p>
-                    <p className="text-[11px] text-slate-500">Only courses assigned to {user?.name} on Moellim</p>
+                    <p className="text-[11px] text-slate-500">Courses assigned to {user?.name} on Moellim</p>
                   </div>
 
                   <div className="py-1 max-h-60 overflow-y-auto">
@@ -111,16 +115,18 @@ export const Topbar: React.FC<TopbarProps> = ({ onOpenMobileMenu }) => {
                             selectCourse(course.id);
                             setCourseDropdownOpen(false);
                           }}
-                          className={`w-full text-left px-3.5 py-2.5 flex items-center justify-between hover:bg-slate-50 transition-colors ${
+                          className={`w-full text-left px-3.5 py-2.5 flex items-center justify-between hover:bg-slate-50 transition-colors cursor-pointer ${
                             isSelected ? 'bg-blue-50/70 text-blue-900 font-semibold' : 'text-slate-700'
                           }`}
                         >
-                          <div>
+                          <div className="min-w-0 pr-2">
                             <div className="flex items-center gap-1.5">
                               <span className="font-bold">{course.code}</span>
-                              <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-100 text-slate-600 border border-slate-200">
-                                {course.section}
-                              </span>
+                              {course.section && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200">
+                                  {course.section}
+                                </span>
+                              )}
                             </div>
                             <p className="text-[11px] text-slate-500 mt-0.5 truncate">{course.title}</p>
                           </div>
@@ -134,46 +140,27 @@ export const Topbar: React.FC<TopbarProps> = ({ onOpenMobileMenu }) => {
             </div>
           )}
 
-          {/* Quick Assistant shortcut (Desktop only) */}
-          <button
-            onClick={() => navigate('/assistant')}
-            className="hidden lg:inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors shadow-xs"
-          >
-            <Sparkles className="w-3.5 h-3.5 text-blue-600" />
-            <span>Ask MUAWIN</span>
-          </button>
-
-          {/* Moellim Connection Status indicator (Honest Demo State - Large screens only) */}
-          <div 
-            title="Moellim Connection: Demo Mode / Frontend Simulation (Playwright browser automation backend pending)"
-            className="hidden xl:flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-full bg-amber-50 text-amber-900 border border-amber-200/80 shadow-2xs"
-          >
-            <span className="w-2 h-2 rounded-full bg-amber-500"></span>
-            <span className="text-[10px] font-bold text-amber-950 uppercase tracking-wider">Moellim:</span>
-            <span className="text-[11px] font-medium text-amber-800">Demo Mode</span>
-          </div>
-
-          {/* Notifications Button (All screens) */}
+          {/* Notifications Button */}
           <button
             onClick={() => navigate('/approvals')}
-            className="relative p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors"
+            className="relative p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
             title="Approvals and notifications"
             aria-label="Pending Approvals"
           >
             <Bell className="w-4 h-4" />
             {stats.pendingApprovals > 0 && (
-              <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-amber-500 rounded-full ring-2 ring-white"></span>
+              <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-amber-500 rounded-full ring-2 ring-white" />
             )}
           </button>
 
-          {/* User Profile Dropdown Menu (All screens - responsive popup) */}
+          {/* User Profile Dropdown Menu */}
           <div className="relative">
             <button
               onClick={() => setProfileOpen(!profileOpen)}
-              className="flex items-center gap-2 p-1.5 text-left rounded-lg hover:bg-slate-100 transition-colors"
+              className="flex items-center gap-2 p-1.5 text-left rounded-xl hover:bg-slate-100 transition-colors cursor-pointer"
               aria-label="Instructor profile menu"
             >
-              <div className="w-7 h-7 rounded-full bg-blue-600 text-white font-bold text-xs flex items-center justify-center shadow-xs">
+              <div className="w-7 h-7 rounded-full bg-blue-600 text-white font-bold text-xs flex items-center justify-center shadow-2xs">
                 {user?.name ? user.name.split(' ').map(n => n[0]).join('').substring(0, 2) : 'HM'}
               </div>
               <div className="hidden md:block text-left">
@@ -203,9 +190,15 @@ export const Topbar: React.FC<TopbarProps> = ({ onOpenMobileMenu }) => {
                 <div className="py-2.5 px-4 border-b border-slate-100 bg-slate-50/70 space-y-2">
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-slate-500 font-medium">Moellim Account:</span>
-                    <span className="font-bold text-amber-800 bg-amber-100/70 border border-amber-200 px-2 py-0.5 rounded text-[10px] flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
-                      Connected / Demo
+                    <span
+                      className={`font-bold border px-2 py-0.5 rounded text-[10px] flex items-center gap-1 ${
+                        isConnected
+                          ? 'text-emerald-800 bg-emerald-50 border-emerald-200'
+                          : 'text-amber-800 bg-amber-100/70 border-amber-200'
+                      }`}
+                    >
+                      <span className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                      <span>{demoMode ? 'Demo' : user?.moellimConnected ? 'Connected' : 'Offline'}</span>
                     </span>
                   </div>
 
@@ -224,7 +217,7 @@ export const Topbar: React.FC<TopbarProps> = ({ onOpenMobileMenu }) => {
                       setProfileOpen(false);
                       navigate('/settings');
                     }}
-                    className="w-full text-left px-4 py-2 text-slate-700 hover:bg-slate-50 font-medium transition-colors"
+                    className="w-full text-left px-4 py-2 text-slate-700 hover:bg-slate-50 font-medium transition-colors cursor-pointer"
                   >
                     System Settings
                   </button>
@@ -233,7 +226,7 @@ export const Topbar: React.FC<TopbarProps> = ({ onOpenMobileMenu }) => {
                       setProfileOpen(false);
                       navigate('/logs');
                     }}
-                    className="w-full text-left px-4 py-2 text-slate-700 hover:bg-slate-50 font-medium transition-colors"
+                    className="w-full text-left px-4 py-2 text-slate-700 hover:bg-slate-50 font-medium transition-colors cursor-pointer"
                   >
                     Activity Logs
                   </button>
@@ -247,7 +240,7 @@ export const Topbar: React.FC<TopbarProps> = ({ onOpenMobileMenu }) => {
                       logout();
                       navigate('/login');
                     }}
-                    className="w-full text-left px-4 py-2 text-rose-600 hover:bg-rose-50 font-medium flex items-center gap-2 transition-colors"
+                    className="w-full text-left px-4 py-2 text-rose-600 hover:bg-rose-50 font-medium flex items-center gap-2 transition-colors cursor-pointer"
                   >
                     <LogOut className="w-3.5 h-3.5" />
                     <span>Sign Out</span>
@@ -261,4 +254,3 @@ export const Topbar: React.FC<TopbarProps> = ({ onOpenMobileMenu }) => {
     </header>
   );
 };
-

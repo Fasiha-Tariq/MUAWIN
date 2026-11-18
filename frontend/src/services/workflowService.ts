@@ -26,7 +26,7 @@ export const EXECUTION_STEPS_ASSIGNMENT = [
   {
     id: 2,
     title: 'Workflow approved',
-    subtitle: 'Teacher authorized action with human-in-the-loop',
+    subtitle: 'Teacher approval recorded',
   },
   {
     id: 3,
@@ -714,10 +714,11 @@ function normalizeWorkflow(
     parsedAssignment.course ||
     courseName;
 
-  const courseId =
-    fallback?.courseId ||
-    extractCourseId(course.href) ||
-    '';
+ const courseId =
+  fallback?.courseId ||
+  backend.course_id ||
+  extractCourseId(course.href) ||
+  '';
 
   const actionType =
     combinedWorkflow
@@ -786,8 +787,8 @@ function normalizeWorkflow(
             course.href,
           verificationStatus:
             backend.result.verified
-              ? 'Verified'
-              : 'Unverified',
+              ? 'Verified' as const
+              : 'Unverified' as const,
           notes:
             backend.result.message ||
             'Workflow result returned by Moellim automation.',
@@ -852,6 +853,11 @@ function normalizeWorkflow(
       existingPayload.assignmentDescription ||
       assignmentDraft?.description ||
       undefined,
+    
+    assignmentDraft:
+      existingPayload.assignmentDraft ||
+      assignmentDraft ||
+      undefined,  
 
     marks:
       existingPayload.marks ??
@@ -908,6 +914,12 @@ function normalizeWorkflow(
 
   return {
     id: backend.id,
+      workflowType:
+      combinedWorkflow
+        ? 'combined'
+        : assignmentWorkflow
+          ? 'assignment'
+          : 'lecture',
     title,
     actionType,
     courseId,
@@ -1070,6 +1082,18 @@ export const workflowService = {
         endpoint,
         {
           instruction: instruction.trim(),
+          course:
+            (workflow.payload as any)?.course ||
+            (workflow as any).course ||
+            null,
+          course_id:
+            (workflow.payload as any)?.course_id ||
+            (workflow as any).course_id ||
+            null,
+          course_code:
+            (workflow.payload as any)?.course_code ||
+            (workflow as any).course_code ||
+            null,
         }
       );
 

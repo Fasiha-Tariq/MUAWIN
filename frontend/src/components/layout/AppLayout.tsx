@@ -17,7 +17,7 @@ export const AppLayout: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col md:flex-row antialiased selection:bg-blue-600 selection:text-white w-full overflow-x-hidden">
+    <div className="min-h-screen bg-slate-50 flex flex-col md:flex-row antialiased selection:bg-blue-600 selection:text-white w-full overflow-x-clip">
       {/* Sidebar navigation */}
       <Sidebar
         collapsed={collapsed}
@@ -27,14 +27,18 @@ export const AppLayout: React.FC = () => {
       />
 
       {/* Main Application Area */}
-      <div className="flex-1 flex flex-col min-w-0 w-full overflow-x-hidden">
+      <div
+      className={`flex-1 flex flex-col min-w-0 w-full transition-all duration-200 ${
+        collapsed ? 'md:pl-16' : 'md:pl-64'
+      }`}
+    >
         <Topbar onOpenMobileMenu={() => setMobileOpen(true)} />
         <main className="flex-1 p-3.5 sm:p-6 md:p-8 max-w-7xl w-full mx-auto min-w-0">
           <Outlet />
         </main>
       </div>
 
-      {/* 5-Minute Upcoming Class Alert Notification (Desktop modal / Mobile bottom sheet) */}
+      {/* 5-Minute Upcoming Class Alert Notification */}
       <UpcomingClassAlert />
 
       {/* Toast Notifications */}

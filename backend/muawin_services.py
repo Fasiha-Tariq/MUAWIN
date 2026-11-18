@@ -3,10 +3,14 @@ Course setup, timetable, folder review, weekly tracking and reminder APIs.
 All records are scoped to the authenticated Moellim teacher.
 """
 from __future__ import annotations
+import logging
+
+logger = logging.getLogger(__name__)
 import csv
 import io
 import json
 import re
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import asyncio
@@ -19,20 +23,21 @@ from fastapi.responses import JSONResponse
 from . import ai_db
 
 
-ALLOWED_LECTURE_EXTS={".pdf",".pptx",".ppt",".docx",".txt"}
+ALLOWED_LECTURE_EXTS = {".pdf", ".pptx", ".ppt", ".docx", ".txt"}
+
 
 def _teacher(server, authorization: Optional[str]) -> str:
-    session=server.get_teacher_session(authorization)
-    username=(session or {}).get("username","").strip()
+    session = server.get_teacher_session(authorization)
+    username = (session or {}).get("username", "").strip()
     if not username:
-        raise HTTPException(status_code=401,detail="Authenticated teacher session is required.")
+        raise HTTPException(status_code=401, detail="Authenticated teacher session is required.")
     return username
 
 
 def _ocr_image(data: bytes) -> str:
     try:
         from PIL import Image
-        import pytesseract
+        pytesseract = __import__("pytesseract")
         image = Image.open(io.BytesIO(data)).convert("RGB")
         return pytesseract.image_to_string(image)
     except Exception as exc:
@@ -64,8 +69,8 @@ def _extract_text(data: bytes, filename: str) -> str:
             # Scanned PDF fallback: render pages and read them with OCR.
             try:
                 import fitz
-                import pytesseract
                 from PIL import Image
+                pytesseract = __import__("pytesseract")
 
                 pdf = fitz.open(stream=data, filetype="pdf")
                 results = []
@@ -109,7 +114,12 @@ def _extract_text(data: bytes, filename: str) -> str:
 
     if ext == ".xlsx":
         try:
-            from openpyxl import load_workbook
+            from importlib import import_module
+            from importlib.util import find_spec
+            if find_spec("openpyxl") is None:
+                raise ModuleNotFoundError("openpyxl is not installed")
+
+            load_workbook = import_module("openpyxl").load_workbook
             wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
             parts = []
             for ws in wb.worksheets:
@@ -118,6 +128,11 @@ def _extract_text(data: bytes, filename: str) -> str:
                     if values:
                         parts.append(" | ".join(values))
             return "\n".join(parts)
+        except ModuleNotFoundError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="XLSX parsing requires the optional dependency 'openpyxl'. Install it with: pip install openpyxl"
+            ) from exc
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Could not read XLSX: {exc}")
 
@@ -169,45 +184,142 @@ def _parse_weeks(text: str) -> List[Dict[str, Any]]:
 
 
 def install(server):
-    router=APIRouter()
+    router = APIRouter()
+
+    def _week_from_section_dates(
+        teacher: str, course: str, live_scan: Dict[str, Any]
+    ) -> Optional[int]:
+        today = date.today()
+        pattern = re.compile(
+            r"(\d{1,2})\s+([A-Za-z]+)\s*[-–—]\s*(\d{1,2})\s+([A-Za-z]+)"
+        )
+
+        def parse_month_day(day_str: str, month_str: str):
+            for fmt in ("%d %B", "%d %b"):
+                try:
+                    dt = datetime.strptime(f"{day_str} {month_str}", fmt)
+                    return dt.month, int(day_str)
+                except ValueError:
+                    pass
+            return None
+
+        # 1. Check section headings from live Moellim scan if present
+        sections = live_scan.get("sections") or live_scan.get("section_headings") or []
+        if isinstance(sections, dict):
+            sections = [{"num": k, "heading": v} for k, v in sections.items()]
+
+        for sec in sections:
+            if isinstance(sec, dict):
+                heading = str(sec.get("heading") or sec.get("title") or "")
+                sec_num = sec.get("week") or sec.get("num")
+            else:
+                heading = str(sec)
+                sec_num = None
+
+            m = pattern.search(heading)
+            if not m:
+                continue
+            first = parse_month_day(m.group(1), m.group(2))
+            last = parse_month_day(m.group(3), m.group(4))
+            if not first or not last:
+                continue
+
+            s_mon, s_day = first
+            e_mon, e_day = last
+            for yr in (today.year - 1, today.year, today.year + 1):
+                try:
+                    start_dt = date(yr, s_mon, s_day)
+                    end_yr = yr + (1 if (e_mon, e_day) < (s_mon, s_day) else 0)
+                    end_dt = date(end_yr, e_mon, e_day)
+                except ValueError:
+                    continue
+                if start_dt <= today <= end_dt:
+                    wk_match = re.search(r"\bweek\s*(\d{1,2})\b", heading, re.I)
+                    if wk_match:
+                        return int(wk_match.group(1))
+                    if sec_num is not None and str(sec_num).isdigit():
+                        return int(sec_num)
+
+        # 2. Check due_date / week date ranges in weekly_expectations
+        progress = ai_db.weekly_progress(teacher, course)
+        dated_weeks = []
+        for row in progress:
+            due = row.get("due_date")
+            if not due:
+                continue
+            try:
+                due_dt = datetime.fromisoformat(str(due).replace("Z", "+00:00")).date()
+                dated_weeks.append((int(row["week"]), due_dt))
+            except Exception:
+                pass
+        if dated_weeks:
+            upcoming = [wk for wk, d in sorted(dated_weeks) if d >= today]
+            if upcoming:
+                return upcoming[0]
+            past = [wk for wk, d in sorted(dated_weeks) if d <= today]
+            if past:
+                return past[-1]
+
+        return None
+
+    def _resolve_live_current_week(
+        teacher: str, course: str, live_scan: Dict[str, Any]
+    ) -> Optional[int]:
+        if live_scan.get("current_week") is not None:
+            return int(live_scan["current_week"])
+
+        date_week = _week_from_section_dates(teacher, course, live_scan)
+        if date_week is not None:
+            return int(date_week)
+
+        sem_week = ai_db.get_semester_current_week(teacher, course)
+        if sem_week is not None:
+            return int(sem_week)
+
+        uploaded = [
+            int(w) for w in (live_scan.get("weeks_with_lecture") or [])
+            if w is not None
+        ]
+        return max(uploaded) if uploaded else None
 
     @router.get("/api/setup/status")
-    def setup_status(course: Optional[str]=None, authorization: Optional[str]=Header(None)):
-        teacher=_teacher(server,authorization)
-        outlines=ai_db.list_outlines(teacher)
+    def setup_status(course: Optional[str] = None, authorization: Optional[str] = Header(None)):
+        teacher = _teacher(server, authorization)
+        outlines = ai_db.list_outlines(teacher)
         if course:
-            setup=ai_db.get_course_setup(teacher,course)
-            readiness=ai_db.get_readiness(teacher,course)
-            outline=None
+            setup = ai_db.get_course_setup(teacher, course)
+            readiness = ai_db.get_readiness(teacher, course)
+            outline = None
             try:
-                outline=ai_db.get_outline(teacher,course)
+                outline = ai_db.get_shared_course_outline(teacher, course)
                 if not outline:
                     from . import muawin_ai
-                    outline=muawin_ai._load_uploaded_outline(teacher,course)
+                    outline = muawin_ai._load_uploaded_outline(teacher, course)
             except Exception as exc:
                 print(f"[SETUP] Exact course outline lookup failed: {exc}")
-            outline_status=({"course":course,"title":outline.get("title"),
-                             "clo_count":len(outline.get("clos") or {}),
-                             "week_count":len(outline.get("weeks") or {}),
-                             "source_name":outline.get("source") or "Saved outline"}
-                            if outline else None)
-            return {"course":course,"setup":setup,"readiness":readiness,
-                    "outline_status":outline_status,"outlines":outlines}
-        return {"outlines":outlines}
+            outline_status = ({"course": course, "title": outline.get("title"),
+                               "clo_count": len(outline.get("clos") or {}),
+                               "week_count": len(outline.get("weeks") or {}),
+                               "source_name": outline.get("source") or "Saved outline"}
+                              if outline else None)
+            return {"course": course, "setup": setup, "readiness": readiness,
+                    "outline_status": outline_status, "outlines": outlines}
+        return {"outlines": outlines}
 
     @router.post("/api/setup/timetable/preview")
-    async def timetable_preview(course: str=Form(...), file: UploadFile=File(...),
-                                authorization: Optional[str]=Header(None)):
-        teacher=_teacher(server,authorization)
-        if not course.strip(): raise HTTPException(status_code=400,detail="Select a course first.")
-        data=await file.read()
-        text=_extract_text(data,file.filename or "timetable.txt")
-        weeks=_parse_weeks(text)
+    async def timetable_preview(course: str = Form(...), file: UploadFile = File(...),
+                                authorization: Optional[str] = Header(None)):
+        teacher = _teacher(server, authorization)
+        if not course.strip():
+            raise HTTPException(status_code=400, detail="Select a course first.")
+        data = await file.read()
+        text = _extract_text(data, file.filename or "timetable.txt")
+        weeks = _parse_weeks(text)
         if not weeks:
-            raise HTTPException(status_code=422,detail="No week/topic rows were detected. Use the manual week editor or upload a clearer timetable.")
-        ai_db.record_event(teacher,"timetable_previewed","success",course,{"filename":file.filename,"weeks":len(weeks)})
-        return {"ok":True,"course":course,"filename":file.filename,"weeks":weeks,
-                "message":"Review and correct the extracted weeks before confirming."}
+            raise HTTPException(status_code=422, detail="No week/topic rows were detected. Use the manual week editor or upload a clearer timetable.")
+        ai_db.record_event(teacher, "timetable_previewed", "success", course, {"filename": file.filename, "weeks": len(weeks)})
+        return {"ok": True, "course": course, "filename": file.filename, "weeks": weeks,
+                "message": "Review and correct the extracted weeks before confirming."}
 
     @router.post("/api/setup/timetable/confirm")
     async def timetable_confirm(
@@ -295,7 +407,7 @@ def install(server):
         return {"ok": True, "course": course, "weeks_saved": len(cleaned)}
 
     @router.put("/api/setup/folder")
-    def folder_save(body: Dict[str,Any], authorization: Optional[str]=Header(None)):
+    def folder_save(body: Dict[str, Any], authorization: Optional[str] = Header(None)):
         teacher = _teacher(server, authorization)
         course = str(body.get("course") or "").strip()
         raw = str(body.get("folder_path") or "").strip()
@@ -331,62 +443,122 @@ def install(server):
             "status": "skipped",
             "message": "No course folder was selected."
         }
+        timetable_ready = False
 
         if resolved:
+            # 1. Check whether a fellow teacher already uploaded the Course Outline and Timetable
+            shared_outline = ai_db.get_shared_course_outline(teacher, course)
+            shared_schedule = ai_db.get_shared_schedule(teacher, course)
+
+            moellim_outline_verified = False
+            moellim_schedule_verified = False
             try:
-                detection = detect_course_outline(course, authorization)
-                candidates = detection.get("candidates") or []
-
-                named_candidates = [
-                    item for item in candidates
-                    if "outline" in str(item.get("filename", "")).lower()
-                ]
-
-                selected = None
-                if len(named_candidates) == 1:
-                    selected = named_candidates[0]
-                elif len(candidates) == 1:
-                    selected = candidates[0]
-
-                if selected:
-                    try:
-                        saved_outline = confirm_detected_outline(
-                            course,
-                            selected["filename"],
-                            authorization
-                        )
-                        outline_result = {
-                            "status": "uploaded",
-                            "filename": selected["filename"],
-                            "details": saved_outline,
-                            "message": "Course outline was saved and uploaded to Moellim General."
-                        }
-                    except HTTPException as exc:
-                        outline_result = {
-                            "status": "failed",
-                            "message": str(exc.detail)
-                        }
-                elif len(candidates) > 1:
-                    outline_result = {
-                        "status": "ambiguous",
-                        "message": "Multiple possible outlines were found. No file was uploaded."
-                    }
-                else:
-                    outline_result = {
-                        "status": "not_found",
-                        "message": "No valid course outline was found in the selected folder."
-                    }
-
+                from . import course_setup_automation
+                if hasattr(course_setup_automation, "verify_course_setup_on_moellim"):
+                    session = server.get_teacher_session(authorization) or {}
+                    v = course_setup_automation.verify_course_setup_on_moellim(
+                        course,
+                        str(session.get("username", "")),
+                        str(session.get("password", "")),
+                    )
+                    moellim_outline_verified = v.get("outline_status") == "verified"
+                    moellim_schedule_verified = v.get("class_schedule_status") == "verified"
             except Exception as exc:
+                print(f"[SETUP] Live Moellim check skipped during folder save: {exc}")
+
+            if shared_outline or moellim_outline_verified:
+                # Already uploaded by another teaching fellow -> sync CLOs & schedule without re-uploading
+                if shared_outline:
+                    try:
+                        from . import muawin_ai
+                        muawin_ai.save_outline_for_teacher(
+                            teacher,
+                            course,
+                            shared_outline,
+                            shared_outline.get("source") or "Shared course outline",
+                        )
+                    except Exception as exc:
+                        print(f"[SETUP] Shared outline cache sync note: {exc}")
+
+                if shared_schedule and not ai_db.get_schedule(teacher, course):
+                    ai_db.save_schedule(teacher, course, shared_schedule)
+
+                timetable_ready = bool(shared_schedule or moellim_schedule_verified)
+                ai_db.set_moellim_setup_status(
+                    teacher,
+                    course,
+                    outline_ready=True,
+                    schedule_ready=timetable_ready,
+                )
+
                 outline_result = {
-                    "status": "failed",
-                    "message": str(exc)
+                    "status": "already_uploaded",
+                    "filename": (shared_outline or {}).get("source") or "Course Outline",
+                    "timetable_uploaded": timetable_ready,
+                    "message": (
+                        "Folder saved. Course outline and timetable were already uploaded by a fellow teacher—"
+                        "CLOs mapped and system is ready."
+                        if timetable_ready else
+                        "Folder saved. Course outline was already uploaded by a fellow teacher—"
+                        "CLOs mapped. Please save Class Days & Timings if not uploaded yet."
+                    ),
                 }
+            else:
+                # 2. Not uploaded yet by any fellow teacher -> detect & upload outline to Moellim General
+                try:
+                    detection = detect_course_outline(course, authorization)
+                    candidates = detection.get("candidates") or []
+
+                    named_candidates = [
+                        item for item in candidates
+                        if "outline" in str(item.get("filename", "")).lower()
+                    ]
+
+                    selected = None
+                    if len(named_candidates) == 1:
+                        selected = named_candidates[0]
+                    elif len(candidates) == 1:
+                        selected = candidates[0]
+
+                    if selected:
+                        try:
+                            saved_outline = confirm_detected_outline(
+                                course,
+                                selected["filename"],
+                                authorization
+                            )
+                            outline_result = {
+                                "status": "uploaded",
+                                "filename": selected["filename"],
+                                "details": saved_outline,
+                                "message": "Course outline was saved and uploaded to Moellim General."
+                            }
+                        except HTTPException as exc:
+                            outline_result = {
+                                "status": "failed",
+                                "message": str(exc.detail)
+                            }
+                    elif len(candidates) > 1:
+                        outline_result = {
+                            "status": "ambiguous",
+                            "message": "Multiple possible outlines were found. No file was uploaded."
+                        }
+                    else:
+                        outline_result = {
+                            "status": "not_found",
+                            "message": "No valid course outline was found in the selected folder."
+                        }
+
+                except Exception as exc:
+                    outline_result = {
+                        "status": "failed",
+                        "message": str(exc)
+                    }
 
             ai_db.record_event(
                 teacher,
                 "automatic_course_outline_upload",
-                "success" if outline_result["status"] == "uploaded" else "failed",
+                "success" if outline_result["status"] in ("uploaded", "already_uploaded") else "failed",
                 course,
                 {
                     "folder_path": resolved,
@@ -400,9 +572,9 @@ def install(server):
             "course": course,
             "folder_path": resolved,
             "outline": outline_result,
+            "timetable_uploaded": timetable_ready,
             "message": outline_result["message"]
         }
-
 
     @router.post("/api/setup/outline/detect")
     def detect_course_outline(course: str, authorization: Optional[str] = Header(None)):
@@ -571,43 +743,44 @@ def install(server):
         return saved
 
     @router.post("/api/setup/folder/scan")
-    def folder_scan(course: str, authorization: Optional[str]=Header(None)):
-        teacher=_teacher(server,authorization)
-        setup=ai_db.get_course_setup(teacher,course)
-        folder=setup.get("folder_path")
-        if not folder: raise HTTPException(status_code=400,detail="Select and save a course folder first.")
-        root=Path(folder)
-        if not root.is_dir(): raise HTTPException(status_code=400,detail="Saved folder is no longer available.")
+    def folder_scan(course: str, authorization: Optional[str] = Header(None)):
+        teacher = _teacher(server, authorization)
+        setup = ai_db.get_course_setup(teacher, course)
+        folder = setup.get("folder_path")
+        if not folder:
+            raise HTTPException(status_code=400, detail="Select and save a course folder first.")
+        root = Path(folder)
+        if not root.is_dir():
+            raise HTTPException(status_code=400, detail="Saved folder is no longer available.")
         for p in root.iterdir():
             if p.is_file() and p.suffix.lower() in ALLOWED_LECTURE_EXTS:
-                ai_db.save_folder_candidate(teacher,course,str(p.resolve()))
-        rows=ai_db.list_folder_candidates(teacher,course)
-        candidates=[{"id":r["id"],"name":r["file_name"],"path":r["file_path"],
-                     "size_bytes":r["size_bytes"],"modified_at":r["modified_at"],
-                     "status":r["status"]} for r in rows]
-        ai_db.record_event(teacher,"course_folder_scanned","success",course,{"candidate_count":len(candidates)})
-        return {"course":course,"candidates":candidates,
-                "message":"Candidates are suggestions only. Confirm a file manually before using it."}
+                ai_db.save_folder_candidate(teacher, course, str(p.resolve()))
+        rows = ai_db.list_folder_candidates(teacher, course)
+        candidates = [{"id": r["id"], "name": r["file_name"], "path": r["file_path"],
+                       "size_bytes": r["size_bytes"], "modified_at": r["modified_at"],
+                       "status": r["status"]} for r in rows]
+        ai_db.record_event(teacher, "course_folder_scanned", "success", course, {"candidate_count": len(candidates)})
+        return {"course": course, "candidates": candidates,
+                "message": "Candidates are suggestions only. Confirm a file manually before using it."}
 
     @router.post("/api/setup/folder/candidates/{candidate_id}/confirm")
-    def folder_candidate_confirm(candidate_id: int, authorization: Optional[str]=Header(None)):
-        teacher=_teacher(server,authorization)
-        if not ai_db.confirm_folder_candidate(teacher,candidate_id):
-            raise HTTPException(status_code=404,detail="Candidate not found for this teacher.")
-        ai_db.record_event(teacher,"folder_candidate_confirmed","success",details={"candidate_id":candidate_id})
-        return {"ok":True,"candidate_id":candidate_id,"status":"confirmed"}
-
+    def folder_candidate_confirm(candidate_id: int, authorization: Optional[str] = Header(None)):
+        teacher = _teacher(server, authorization)
+        if not ai_db.confirm_folder_candidate(teacher, candidate_id):
+            raise HTTPException(status_code=404, detail="Candidate not found for this teacher.")
+        ai_db.record_event(teacher, "folder_candidate_confirmed", "success", details={"candidate_id": candidate_id})
+        return {"ok": True, "candidate_id": candidate_id, "status": "confirmed"}
 
     @router.get("/api/setup/class-schedule")
-    def class_schedule_get(course: str, authorization: Optional[str]=Header(None)):
+    def class_schedule_get(course: str, authorization: Optional[str] = Header(None)):
         teacher = _teacher(server, authorization)
         course = course.strip()
         if not course:
             raise HTTPException(status_code=400, detail="Select a course first.")
-        return {"course": course, "slots": ai_db.get_schedule(teacher, course)}
+        return {"course": course, "slots": ai_db.get_shared_schedule(teacher, course)}
 
     @router.put("/api/setup/class-schedule")
-    def class_schedule_save(body: Dict[str, Any], authorization: Optional[str]=Header(None)):
+    def class_schedule_save(body: Dict[str, Any], authorization: Optional[str] = Header(None)):
         teacher = _teacher(server, authorization)
         course = str(body.get("course") or "").strip()
         slots = body.get("slots")
@@ -645,7 +818,6 @@ def install(server):
             end = str(slot.get("end_time") or slot.get("end") or "").strip()
 
             def valid_time(value):
-                import re
                 match = re.fullmatch(r"(\d{1,2}):(\d{2})", value)
                 if not match:
                     return None
@@ -668,6 +840,8 @@ def install(server):
             })
             seen.add(day)
 
+        already_uploaded_by_fellow = bool(ai_db.get_shared_schedule(teacher, course))
+
         saved = ai_db.save_schedule(teacher, course, cleaned)
         verified = ai_db.get_schedule(teacher, course)
 
@@ -677,66 +851,85 @@ def install(server):
         ai_db.record_event(teacher, "class_schedule_confirmed", "success", course,
                            {"slots": len(verified)})
 
-        # Generate a readable DOCX from the confirmed weekly class timings.
-        schedule_upload = {
-            "ok": False,
-            "error": "Class schedule was saved, but the Moellim upload was not attempted.",
-        }
+        # Check whether the timetable/class schedule was already uploaded on Moellim by a fellow teacher.
+        session = server.get_teacher_session(authorization)
+        username = str((session or {}).get("username", "")).strip()
+        password = str((session or {}).get("password", "")).strip()
 
+        moellim_schedule_verified = False
         try:
-            from docx import Document
-
-            session = server.get_teacher_session(authorization)
-            username = str((session or {}).get("username", "")).strip()
-            password = str((session or {}).get("password", "")).strip()
-
-            safe_teacher = re.sub(r"[^A-Za-z0-9_-]+", "_", teacher).strip("_") or "teacher"
-            safe_course = re.sub(r"[^A-Za-z0-9_-]+", "_", course).strip("_") or "course"
-            storage = (
-                Path(__file__).resolve().parent
-                / "data" / "course_setup_files" / safe_teacher / safe_course
-            )
-            storage.mkdir(parents=True, exist_ok=True)
-            timetable_path = storage / "Class_Schedule.docx"
-
-            doc = Document()
-            doc.add_heading("Class Schedule", 0)
-            doc.add_paragraph(f"Course: {course}")
-            doc.add_paragraph("Confirmed weekly class days and timings")
-
-            table = doc.add_table(rows=1, cols=3)
-            table.style = "Table Grid"
-            headers = table.rows[0].cells
-            headers[0].text = "Day"
-            headers[1].text = "Start Time"
-            headers[2].text = "End Time"
-
-            weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday",
-                        "Friday", "Saturday", "Sunday"]
-
-            for slot in verified:
-                day_number = int(slot.get("weekday", 0))
-                row = table.add_row().cells
-                row[0].text = weekdays[day_number]
-                row[1].text = str(slot.get("start_time", ""))
-                row[2].text = str(slot.get("end_time", ""))
-
-            doc.save(str(timetable_path))
-
             from . import course_setup_automation
-            schedule_upload = course_setup_automation.upload_class_schedule_document(
-                course,
-                str(timetable_path),
-                username,
-                password,
-            )
-
+            if hasattr(course_setup_automation, "verify_course_setup_on_moellim"):
+                v = course_setup_automation.verify_course_setup_on_moellim(
+                    course, username, password
+                )
+                moellim_schedule_verified = v.get("class_schedule_status") == "verified"
         except Exception as exc:
+            print(f"[SETUP] Live Moellim schedule check skipped: {exc}")
+
+        if already_uploaded_by_fellow or moellim_schedule_verified:
+            schedule_upload = {
+                "ok": True,
+                "skipped": True,
+                "message": "Class schedule saved. Timetable was already uploaded to Moellim General by a fellow teacher.",
+            }
+        else:
+            # Generate a readable DOCX from the confirmed weekly class timings and upload to Moellim.
             schedule_upload = {
                 "ok": False,
-                "error": str(exc),
-                "message": "Class schedule was saved in MUAWIN, but its Moellim upload failed.",
+                "error": "Class schedule was saved, but the Moellim upload was not attempted.",
             }
+
+            try:
+                from docx import Document
+
+                safe_teacher = re.sub(r"[^A-Za-z0-9_-]+", "_", teacher).strip("_") or "teacher"
+                safe_course = re.sub(r"[^A-Za-z0-9_-]+", "_", course).strip("_") or "course"
+                storage = (
+                    Path(__file__).resolve().parent
+                    / "data" / "course_setup_files" / safe_teacher / safe_course
+                )
+                storage.mkdir(parents=True, exist_ok=True)
+                timetable_path = storage / "Class_Schedule.docx"
+
+                doc = Document()
+                doc.add_heading("Class Schedule", 0)
+                doc.add_paragraph(f"Course: {course}")
+                doc.add_paragraph("Confirmed weekly class days and timings")
+
+                table = doc.add_table(rows=1, cols=3)
+                table.style = "Table Grid"
+                headers = table.rows[0].cells
+                headers[0].text = "Day"
+                headers[1].text = "Start Time"
+                headers[2].text = "End Time"
+
+                weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday",
+                            "Friday", "Saturday", "Sunday"]
+
+                for slot in verified:
+                    day_number = int(slot.get("weekday", 0))
+                    row = table.add_row().cells
+                    row[0].text = weekdays[day_number]
+                    row[1].text = str(slot.get("start_time", ""))
+                    row[2].text = str(slot.get("end_time", ""))
+
+                doc.save(str(timetable_path))
+
+                from . import course_setup_automation
+                schedule_upload = course_setup_automation.upload_class_schedule_document(
+                    course,
+                    str(timetable_path),
+                    username,
+                    password,
+                )
+
+            except Exception as exc:
+                schedule_upload = {
+                    "ok": False,
+                    "error": str(exc),
+                    "message": "Class schedule was saved in MUAWIN, but its Moellim upload failed.",
+                }
 
         ai_db.record_event(
             teacher,
@@ -765,7 +958,7 @@ def install(server):
         try:
             from . import muawin_lecture as automation
 
-            # First inspect the actual weekly sections in the selected Moellim course.
+            # Inspect the actual weekly sections in the selected Moellim course.
             live_scan = automation.scan_live_course_lecture_weeks(course)
             live_weeks = live_scan["weeks_with_lecture"]
 
@@ -785,15 +978,23 @@ def install(server):
                     elif result["status"] == "unknown":
                         unknown += 1
 
-            current_week = ai_db.get_semester_current_week(teacher, course)
+            current_week = _resolve_live_current_week(teacher, course, live_scan)
             ai_db.create_missing_reminders(
                 teacher, course, current_week,
                 live_uploaded_weeks=live_weeks
             )
+
+            live_set = {int(w) for w in (live_weeks or []) if w is not None}
             progress = ai_db.weekly_progress(teacher, course)
+            for row in progress:
+                if int(row["week"]) in live_set:
+                    row["lecture_completed"] = True
+                    row["status"] = "completed"
+
             return {
                 "ok": True, "course": course, "checked": len(checks),
                 "missing": missing, "unknown": unknown, "weeks": progress,
+                "current_week": current_week,
                 "live_checked_weeks": live_scan["checked_weeks"],
                 "live_uploaded_weeks": live_weeks,
                 "has_any_live_lecture": live_scan["has_any_lecture"],
@@ -801,33 +1002,42 @@ def install(server):
         except HTTPException:
             raise
         except Exception as exc:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Live Moellim verification failed; saved progress was preserved: {exc}"
+            logger.exception(
+                "[WEEKLY TRACKER] Refresh failed for course: %s",
+                course
             )
 
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "Live Moellim verification failed; "
+                    f"saved progress was preserved: {exc}"
+                )
+            ) from exc
+
     @router.get("/api/tracker/weekly")
-    def weekly_tracker(course: str, authorization: Optional[str]=Header(None)):
-        teacher=_teacher(server,authorization)
-        progress=ai_db.weekly_progress(teacher,course)
-        return {"course":course,"weeks":progress,
-                "summary":{"expected":len(progress),"completed":sum(1 for x in progress if x["lecture_completed"]),
-                           "pending":sum(1 for x in progress if x["expected"] and not x["lecture_completed"])}}
+    def weekly_tracker(course: str, authorization: Optional[str] = Header(None)):
+        teacher = _teacher(server, authorization)
+        progress = ai_db.weekly_progress(teacher, course)
+        return {"course": course, "weeks": progress,
+                "summary": {"expected": len(progress), "completed": sum(1 for x in progress if x["lecture_completed"]),
+                            "pending": sum(1 for x in progress if x["expected"] and not x["lecture_completed"])}}
 
     @router.put("/api/tracker/weekly")
-    def weekly_tracker_update(body: Dict[str,Any], authorization: Optional[str]=Header(None)):
-        teacher=_teacher(server,authorization)
-        course=str(body.get("course") or "").strip()
-        weeks=body.get("weeks") or []
-        if not course or not isinstance(weeks,list): raise HTTPException(status_code=400,detail="Course and weeks are required.")
-        if not ai_db.save_expectations(teacher,course,weeks): raise HTTPException(status_code=500,detail="Could not save weekly tracker.")
-        return {"ok":True,"saved":len(weeks)}
+    def weekly_tracker_update(body: Dict[str, Any], authorization: Optional[str] = Header(None)):
+        teacher = _teacher(server, authorization)
+        course = str(body.get("course") or "").strip()
+        weeks = body.get("weeks") or []
+        if not course or not isinstance(weeks, list):
+            raise HTTPException(status_code=400, detail="Course and weeks are required.")
+        if not ai_db.save_expectations(teacher, course, weeks):
+            raise HTTPException(status_code=500, detail="Could not save weekly tracker.")
+        return {"ok": True, "saved": len(weeks)}
 
     @router.get("/api/reminders")
-    def reminders(course: Optional[str]=None, current_week: Optional[int]=None, authorization: Optional[str]=Header(None)):
+    def reminders(course: Optional[str] = None, current_week: Optional[int] = None, authorization: Optional[str] = Header(None)):
         teacher = _teacher(server, authorization)
 
-        # Never display old reminder history while the live Moellim course is empty.
         if not course:
             return {"reminders": []}
 
@@ -840,36 +1050,62 @@ def install(server):
                 detail=f"Could not verify live Moellim course before loading reminders: {exc}"
             )
 
-        if not live_scan.get("has_any_lecture"):
-            return {"reminders": []}
+        live_weeks = live_scan.get("weeks_with_lecture") or []
+        effective_week = (
+            int(current_week)
+            if current_week is not None
+            else _resolve_live_current_week(teacher, course, live_scan)
+        )
 
-        return {"reminders": ai_db.list_reminders(teacher, course)}
+        # Sync reminders against live Moellim weeks up through effective_week
+        ai_db.create_missing_reminders(
+            teacher,
+            course,
+            effective_week,
+            live_uploaded_weeks=live_weeks,
+        )
+
+        items = ai_db.list_reminders(teacher, course)
+        live_set = {int(w) for w in live_weeks if w is not None}
+        enriched = []
+        for item in items:
+            row = dict(item)
+            week_num = row.get("week")
+            row["week_number"] = week_num
+            row["current_week"] = effective_week
+            row["lecture_uploaded"] = (
+                int(week_num) in live_set if week_num is not None else False
+            )
+            row["type"] = "missing_lecture"
+            enriched.append(row)
+
+        return {"reminders": enriched, "current_week": effective_week}
 
     @router.post("/api/reminders/{reminder_id}")
-    def reminder_action(reminder_id: int, body: Dict[str,Any], authorization: Optional[str]=Header(None)):
-        teacher=_teacher(server,authorization)
-        action=str(body.get("action") or "")
-        until=body.get("until")
-        if action=="snooze" and not until: raise HTTPException(status_code=400,detail="Provide a snooze-until date/time.")
-        if not ai_db.update_reminder(teacher,reminder_id,action,until):
-            raise HTTPException(status_code=404,detail="Reminder not found or action is invalid.")
-        return {"ok":True,"id":reminder_id,"status":action}
+    def reminder_action(reminder_id: int, body: Dict[str, Any], authorization: Optional[str] = Header(None)):
+        teacher = _teacher(server, authorization)
+        action = str(body.get("action") or "")
+        until = body.get("until")
+        if action == "snooze" and not until:
+            raise HTTPException(status_code=400, detail="Provide a snooze-until date/time.")
+        if not ai_db.update_reminder(teacher, reminder_id, action, until):
+            raise HTTPException(status_code=404, detail="Reminder not found or action is invalid.")
+        return {"ok": True, "id": reminder_id, "status": action}
 
     @router.get("/api/readiness")
-    def readiness(course: str, authorization: Optional[str]=Header(None)):
-        teacher=_teacher(server,authorization)
-        result=ai_db.get_readiness(teacher,course)
+    def readiness(course: str, authorization: Optional[str] = Header(None)):
+        teacher = _teacher(server, authorization)
+        result = ai_db.get_readiness(teacher, course)
         try:
             from . import muawin_ai
-            result["outline_ready"]=bool(muawin_ai.find_outline(course,teacher))
+            result["outline_ready"] = bool(muawin_ai.find_outline(course, teacher))
         except Exception:
             pass
         return result
 
     @router.get("/api/setup/events")
-    def feature_events(limit: int=200, authorization: Optional[str]=Header(None)):
-        teacher=_teacher(server,authorization)
-        return {"events":ai_db.list_events(teacher,limit)}
+    def feature_events(limit: int = 200, authorization: Optional[str] = Header(None)):
+        teacher = _teacher(server, authorization)
+        return {"events": ai_db.list_events(teacher, limit)}
 
     server.app.include_router(router)
-

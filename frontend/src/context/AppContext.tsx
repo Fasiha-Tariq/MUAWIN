@@ -136,6 +136,7 @@ const buildWorkflowApprovalData = (
 
   return approvalData;
 };
+
 /*
 |--------------------------------------------------------------------------
 | RESTORE USER
@@ -243,6 +244,13 @@ interface AppContextType {
   workflows: WorkflowItem[];
 
   activityLogs: ActivityLog[];
+
+  addActivityLog: (
+    log: Omit<ActivityLog, 'id' | 'timestamp'> & {
+      id?: string;
+      timestamp?: string;
+    }
+  ) => void;
 
   currentLectureSession: LectureSessionData | null;
 
@@ -610,6 +618,34 @@ export const AppProvider: React.FC<{
     return [];
   });
 
+  const addActivityLog = (
+    entry: Omit<ActivityLog, 'id' | 'timestamp'> & {
+      id?: string;
+      timestamp?: string;
+    }
+  ) => {
+    const newLog: ActivityLog = {
+      id:
+        entry.id ||
+        `log-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      timestamp:
+        entry.timestamp ||
+        'Today, ' +
+          new Date().toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit',
+          }),
+      ...entry,
+    };
+
+    setActivityLogs((prev) => {
+      if (prev.some((item) => item.id === newLog.id)) {
+        return prev;
+      }
+      return [newLog, ...prev];
+    });
+  };
+
   // Load the teacher's persistent backend audit trail after login.
   useEffect(() => {
     if (!user?.username) return;
@@ -706,12 +742,13 @@ export const AppProvider: React.FC<{
 
       return [];
     }
-    
   });
-    // Keep the latest workflows available to polling
-// without restarting the polling effect on every update.
-      const workflowsRef = useRef(workflows);
-      workflowsRef.current = workflows;
+
+  // Keep the latest workflows available to polling
+  // without restarting the polling effect on every update.
+  const workflowsRef = useRef(workflows);
+  workflowsRef.current = workflows;
+
   // ============================================================
   // AUTOMATIC CLASS MODE
   // ============================================================
@@ -1504,17 +1541,18 @@ export const AppProvider: React.FC<{
 
       const data =
         response.data;
-        console.log('[MUAWIN AUTH] Backend login response:', data);
+      console.log('[MUAWIN AUTH] Backend login response:', data);
 
-        console.log('[MUAWIN AUTH] Course discovery:', {
-          authenticated: data?.authenticated,
-          responseKeys: data ? Object.keys(data) : [],
-          courses: data?.courses,
-          coursesIsArray: Array.isArray(data?.courses),
-          coursesCount: Array.isArray(data?.courses)
-            ? data.courses.length
-            : null,
-        });
+      console.log('[MUAWIN AUTH] Course discovery:', {
+        authenticated: data?.authenticated,
+        responseKeys: data ? Object.keys(data) : [],
+        courses: data?.courses,
+        coursesIsArray: Array.isArray(data?.courses),
+        coursesCount: Array.isArray(data?.courses)
+          ? data.courses.length
+          : null,
+      });
+
       if (
         !data ||
         data.authenticated !== true
@@ -1666,7 +1704,6 @@ export const AppProvider: React.FC<{
           : [];
 
       if (
-
         liveCourses.length === 0
       ) {
         throw new Error(
@@ -1773,23 +1810,6 @@ export const AppProvider: React.FC<{
       // ========================================================
       // PERSIST AUTHENTICATED SESSION
       // ========================================================
-
-      /*
-       * IMPORTANT:
-       *
-       * We keep the authenticated teacher and course roster in
-       * localStorage so a browser refresh does NOT turn:
-       *
-       * "12 assigned courses"
-       *
-       * into:
-       *
-       * "0 assigned courses".
-       *
-       * The rememberMe flag is retained for compatibility with
-       * the login UI, but the active MUAWIN session must remain
-       * restorable across normal page reloads.
-       */
 
       try {
         localStorage.setItem(
@@ -1902,15 +1922,9 @@ export const AppProvider: React.FC<{
   };
 
   // ============================================================
-  // DEBUG - COURSE STATE
-  // ============================================================
-
-  // ============================================================
   // BACKEND WORKFLOW SYNCHRONIZATION
   // ============================================================
 
-  // Keep backend workflows synchronized while the teacher is logged in.
-  // This also makes newly created approvals appear without manual refresh.
   useEffect(() => {
     if (!user?.id && !user?.username) {
       return;
@@ -1933,6 +1947,7 @@ export const AppProvider: React.FC<{
 
     void refreshBackendWorkflows();
   }, [user?.id, user?.username]);
+
   // ============================================================
   // LOGOUT
   // ============================================================
@@ -1947,21 +1962,12 @@ export const AppProvider: React.FC<{
         'unknown teacher'
     );
 
-    /*
-     * Remove the frontend bearer token.
-     *
-     * This prevents subsequent workflow requests from being
-     * authenticated as the previous teacher.
-     */
     try {
       localStorage.removeItem(
         'muawin_auth_token'
       );
     } catch {}
 
-    /*
-     * Clear ACTIVE in-memory state.
-     */
     setUser(null);
 
     setCourses([]);
@@ -1978,12 +1984,6 @@ export const AppProvider: React.FC<{
       false
     );
 
-    /*
-     * Remove the current authentication snapshot.
-     *
-     * Teacher-specific workflow/activity history remains
-     * stored under the teacher's username.
-     */
     try {
       localStorage.removeItem(
         'muawin_user'
@@ -2008,88 +2008,41 @@ export const AppProvider: React.FC<{
   // ============================================================
   // REAL BACKEND WORKFLOW CREATION
   // ============================================================
-// ============================================================
-// REAL BACKEND WORKFLOW CREATION
-// ============================================================
-//
-// ROUTING:
-// - lecture    -> /api/workflows/prepare
-// - assignment -> /api/assignment-workflows/prepare
-//
-// This is intentionally handled here so every frontend entry
-// point uses the correct backend workflow type.
-// ============================================================
 
-const addWorkflow = async (
-  newWf: WorkflowItem
-): Promise<WorkflowItem | null> => {
-  try {
-    if (!user) {
-      throw new Error(
-        'You must be logged in before creating a workflow.'
-      );
-    }
+  const addWorkflow = async (
+    newWf: WorkflowItem
+  ): Promise<WorkflowItem | null> => {
+    try {
+      if (!user) {
+        throw new Error(
+          'You must be logged in before creating a workflow.'
+        );
+      }
 
-    /*
-     * ----------------------------------------------------------
-     * EXTRACT ORIGINAL TEACHER INSTRUCTION
-     * ----------------------------------------------------------
-     *
-     * IMPORTANT:
-     * For assignment workflows, the backend parser needs the
-     * original natural-language instruction.
-     *
-     * Example:
-     *
-     * "Create a 5 marks assignment for CS7 MUAWIN (Female),
-     *  Week 4, titled..."
-     *
-     * Do NOT reconstruct this from the workflow title because
-     * that can lose important parameters such as:
-     * - deadline
-     * - question count
-     * - question type
-     * - source lecture
-     */
+      const instruction =
+        newWf.instructionText ||
+        String(
+          (
+            newWf.payload as any
+          )?.instruction ||
+          newWf.detectedIntent?.rawInstruction ||
+          newWf.detectedIntent?.action ||
+          newWf.title ||
+          ''
+        );
 
-    const instruction =
-      newWf.instructionText ||
-      String(
-        (
-          newWf.payload as any
-        )?.instruction ||
-        newWf.detectedIntent?.rawInstruction ||
-        newWf.detectedIntent?.action ||
-        newWf.title ||
-        ''
-      );
+      if (!instruction.trim()) {
+        throw new Error(
+          'No teacher instruction was found for this workflow.'
+        );
+      }
 
-    if (!instruction.trim()) {
-      throw new Error(
-        'No teacher instruction was found for this workflow.'
-      );
-    }
+      const payload =
+        (newWf.payload || {}) as Record<
+          string,
+          any
+        >;
 
-    /*
-     * ----------------------------------------------------------
-     * DETERMINE WORKFLOW TYPE
-     * ----------------------------------------------------------
-     *
-     * Assistant.tsx already provides workflowType inside
-     * the payload:
-     *
-     * payload.workflowType = "lecture" | "assignment"
-     *
-     * We also check actionType/title as defensive fallbacks.
-     */
-
-    const payload =
-      (newWf.payload || {}) as Record<
-        string,
-        any
-      >;
-
-    
       const explicitWorkflowType = String(
         payload.workflowType ||
           (newWf as any).workflowType ||
@@ -2150,280 +2103,226 @@ const addWorkflow = async (
         isLectureWorkflow,
       });
 
-    /*
-     * ----------------------------------------------------------
-     * BUILD COMMON PAYLOAD
-     * ----------------------------------------------------------
-     */
-
-    const workflowPayload = {
-      ...payload,
-      instruction,
-      course: selectedCourse?.title || null,
-      course_id: selectedCourse?.id || selectedCourseId || null,
-      course_code: selectedCourse?.code || null,
-    };
-    
-    /*
-    * COMBINED LECTURE + ASSIGNMENT WORKFLOW
-    *
-    * The workflow service routes this to:
-    * /api/combined-workflows/prepare
-    */
-    if (isCombinedWorkflow) {
-      console.log(
-        '[AppContext] Routing COMBINED workflow to backend:',
-        user.username
-      );
-
-      const combinedPayload = {
-        ...workflowPayload,
-        workflowType: 'combined',
+      const workflowPayload = {
+        ...payload,
+        instruction,
+        course: selectedCourse?.title || null,
+        course_id: selectedCourse?.id || selectedCourseId || null,
+        course_code: selectedCourse?.code || null,
       };
 
-      const backendWorkflow =
-        await workflowService.createWorkflow({
-          ...newWf,
-          instructionText: instruction,
-          payload: combinedPayload,
+      // COMBINED LECTURE + ASSIGNMENT WORKFLOW
+      if (isCombinedWorkflow) {
+        console.log(
+          '[AppContext] Routing COMBINED workflow to backend:',
+          user.username
+        );
+
+        const combinedPayload = {
+          ...workflowPayload,
           workflowType: 'combined',
-        } as WorkflowItem);
+        };
 
-      if (!backendWorkflow?.id) {
-        throw new Error(
-          'MUAWIN combined-workflow backend did not return a valid workflow.'
-        );
-      }
-
-      console.log(
-        '[AppContext] REAL combined workflow created:',
-        backendWorkflow.id
-      );
-
-      setWorkflows((prev) => [
-        backendWorkflow,
-        ...prev.filter(
-          (workflow) =>
-            workflow.id !== backendWorkflow.id
-        ),
-      ]);
-
-      addToast(
-        'info',
-        'Combined Workflow Prepared',
-        'The lecture upload and assignment draft are ready for teacher review.'
-      );
-
-      return backendWorkflow;
-    }
-    /*
-     * ----------------------------------------------------------
-     * ASSIGNMENT WORKFLOW
-     * ----------------------------------------------------------
-     *
-     * IMPORTANT:
-     *
-     * Assignment workflows MUST NOT go through
-     * workflowService.createWorkflow().
-     *
-     * They have their own backend lifecycle:
-     *
-     * prepare -> approve -> execute
-     *
-     * and their own ID prefix:
-     *
-     * awf-xxxxxxxxxx
-     */
-
-    if (
-      isAssignmentWorkflow &&
-      !isLectureWorkflow
-    ) {
-      console.log(
-        '[AppContext] Routing ASSIGNMENT workflow to dedicated assignment backend:',
-        user.username
-      );
-
-      console.log(
-        '[AppContext] Assignment instruction:',
-        instruction
-      );
-
-      const response =
-     await api.post<any>(
-    '/assignment-workflows/prepare',
-    {
-      instruction,
-      course: workflowPayload.course,
-      course_id: workflowPayload.course_id,
-      course_code: workflowPayload.course_code,
-    }
-  );
-
-      const backendWorkflow =
-        response.data;
-
-      if (
-        !backendWorkflow ||
-        !backendWorkflow.id
-      ) {
-        throw new Error(
-          'MUAWIN assignment backend did not return a valid workflow.'
-        );
-      }
-
-      console.log(
-        '[AppContext] REAL assignment workflow created:',
-        backendWorkflow.id
-      );
-
-      /*
-       * Safety check:
-       *
-       * An assignment workflow must receive an awf- ID.
-       * If the backend accidentally returns wf-, we stop here
-       * rather than allowing a lecture workflow to execute.
-       */
-
-      if (
-        !String(
-          backendWorkflow.id
-        ).startsWith('awf-')
-      ) {
-        throw new Error(
-          `Backend returned an invalid assignment workflow ID: ${backendWorkflow.id}`
-        );
-      }
-
-      setWorkflows((prev) => [
-        backendWorkflow,
-
-        ...prev.filter(
-          (w) =>
-            w.id !==
-            backendWorkflow.id
-        ),
-      ]);
-if (
-  backendWorkflow.status === 'needs_clarification'
-) {
-  addToast(
-    'info',
-    'More Information Required',
-    backendWorkflow.clarification_question ||
-      'Please provide the missing assignment details.'
-  );
-} else if (
-  backendWorkflow.status === 'waiting_approval'
-) {
-  addToast(
-    'success',
-    'Assignment Ready for Approval',
-    `Assignment "${backendWorkflow.title || backendWorkflow.payload?.assignment_title || backendWorkflow.payload?.assignmentTitle || backendWorkflow.assignmentTitle || "MUAWIN Assignment"}" is ready for teacher review.`
-  );
-} else {
-  addToast(
-    'info',
-    'Assignment Workflow',
-    `Current status: ${backendWorkflow.status}`
-  );
-}
-
-      return backendWorkflow;
-    }
-
-    /*
-     * ----------------------------------------------------------
-     * LECTURE / GENERAL WORKFLOW
-     * ----------------------------------------------------------
-     *
-     * Existing lecture behavior remains unchanged.
-     */
-
-    if (
-      isLectureWorkflow ||
-      !explicitWorkflowType
-    ) {
-      console.log(
-        '[AppContext] Routing LECTURE/GENERAL workflow to backend:',
-        user.username
-      );
-
-      const backendWorkflow =
-        await workflowService.createWorkflow(
-          {
+        const backendWorkflow =
+          await workflowService.createWorkflow({
             ...newWf,
+            instructionText: instruction,
+            payload: combinedPayload,
+            workflowType: 'combined',
+          } as WorkflowItem);
 
-            instructionText:
-              instruction,
+        if (!backendWorkflow?.id) {
+          throw new Error(
+            'MUAWIN combined-workflow backend did not return a valid workflow.'
+          );
+        }
 
-            payload:
-              workflowPayload,
-          }
+        console.log(
+          '[AppContext] REAL combined workflow created:',
+          backendWorkflow.id
         );
 
-      if (
-        !backendWorkflow ||
-        !backendWorkflow.id
-      ) {
-        throw new Error(
-          'MUAWIN backend did not return a valid workflow.'
+        setWorkflows((prev) => [
+          backendWorkflow,
+          ...prev.filter(
+            (workflow) =>
+              workflow.id !== backendWorkflow.id
+          ),
+        ]);
+
+        addToast(
+          'info',
+          'Combined Workflow Prepared',
+          'The lecture upload and assignment draft are ready for teacher review.'
         );
+
+        return backendWorkflow;
       }
 
-      console.log(
-        '[AppContext] REAL backend workflow created:',
-        backendWorkflow.id
-      );
+      // ASSIGNMENT WORKFLOW
+      if (
+        isAssignmentWorkflow &&
+        !isLectureWorkflow
+      ) {
+        console.log(
+          '[AppContext] Routing ASSIGNMENT workflow to dedicated assignment backend:',
+          user.username
+        );
 
-      setWorkflows((prev) => [
-        backendWorkflow,
+        console.log(
+          '[AppContext] Assignment instruction:',
+          instruction
+        );
 
-        ...prev.filter(
-          (w) =>
-            w.id !==
+        const response =
+          await api.post<any>(
+            '/assignment-workflows/prepare',
+            {
+              instruction,
+              course: workflowPayload.course,
+              course_id: workflowPayload.course_id,
+              course_code: workflowPayload.course_code,
+            }
+          );
+
+        const backendWorkflow =
+          response.data;
+
+        if (
+          !backendWorkflow ||
+          !backendWorkflow.id
+        ) {
+          throw new Error(
+            'MUAWIN assignment backend did not return a valid workflow.'
+          );
+        }
+
+        console.log(
+          '[AppContext] REAL assignment workflow created:',
+          backendWorkflow.id
+        );
+
+        if (
+          !String(
             backendWorkflow.id
-        ),
-      ]);
+          ).startsWith('awf-')
+        ) {
+          throw new Error(
+            `Backend returned an invalid assignment workflow ID: ${backendWorkflow.id}`
+          );
+        }
+
+        setWorkflows((prev) => [
+          backendWorkflow,
+          ...prev.filter(
+            (w) =>
+              w.id !==
+              backendWorkflow.id
+          ),
+        ]);
+
+        if (
+          backendWorkflow.status === 'needs_clarification'
+        ) {
+          addToast(
+            'info',
+            'More Information Required',
+            backendWorkflow.clarification_question ||
+              'Please provide the missing assignment details.'
+          );
+        } else if (
+          backendWorkflow.status === 'waiting_approval'
+        ) {
+          addToast(
+            'success',
+            'Assignment Ready for Approval',
+            `Assignment "${backendWorkflow.title || backendWorkflow.payload?.assignment_title || backendWorkflow.payload?.assignmentTitle || backendWorkflow.assignmentTitle || 'MUAWIN Assignment'}" is ready for teacher review.`
+          );
+        } else {
+          addToast(
+            'info',
+            'Assignment Workflow',
+            `Current status: ${backendWorkflow.status}`
+          );
+        }
+
+        return backendWorkflow;
+      }
+
+      // LECTURE / GENERAL WORKFLOW
+      if (
+        isLectureWorkflow ||
+        !explicitWorkflowType
+      ) {
+        console.log(
+          '[AppContext] Routing LECTURE/GENERAL workflow to backend:',
+          user.username
+        );
+
+        const backendWorkflow =
+          await workflowService.createWorkflow(
+            {
+              ...newWf,
+
+              instructionText:
+                instruction,
+
+              payload:
+                workflowPayload,
+            }
+          );
+
+        if (
+          !backendWorkflow ||
+          !backendWorkflow.id
+        ) {
+          throw new Error(
+            'MUAWIN backend did not return a valid workflow.'
+          );
+        }
+
+        console.log(
+          '[AppContext] REAL backend workflow created:',
+          backendWorkflow.id
+        );
+
+        setWorkflows((prev) => [
+          backendWorkflow,
+          ...prev.filter(
+            (w) =>
+              w.id !==
+              backendWorkflow.id
+          ),
+        ]);
+
+        addToast(
+          'info',
+          'Workflow Prepared',
+          `Workflow "${backendWorkflow.title}" is ready for teacher review.`
+        );
+
+        return backendWorkflow;
+      }
+
+      throw new Error(
+        `MUAWIN could not determine the workflow type for "${newWf.title}".`
+      );
+    } catch (error: any) {
+      console.error(
+        '[AppContext] Failed to create backend workflow:',
+        error
+      );
 
       addToast(
-        'info',
-        'Workflow Prepared',
-        `Workflow "${backendWorkflow.title}" is ready for teacher review.`
+        'error',
+        'Workflow Preparation Failed',
+        error?.message ||
+          'MUAWIN could not prepare the workflow.'
       );
 
-      return backendWorkflow;
+      return null;
     }
-
-    /*
-     * ----------------------------------------------------------
-     * UNKNOWN WORKFLOW TYPE
-     * ----------------------------------------------------------
-     *
-     * Do not silently send an unknown workflow to the lecture
-     * endpoint. That could create the same type of bug we just
-     * found.
-     */
-
-    throw new Error(
-      `MUAWIN could not determine the workflow type for "${newWf.title}".`
-    );
-  } catch (error: any) {
-    console.error(
-      '[AppContext] Failed to create backend workflow:',
-      error
-    );
-
-    addToast(
-      'error',
-      'Workflow Preparation Failed',
-      error?.message ||
-        'MUAWIN could not prepare the workflow.'
-    );
-
-    return null;
-  }
-};
+  };
 
   const clarifyAssignmentWorkflow = async (
     id: string,
@@ -2487,6 +2386,7 @@ if (
       return null;
     }
   };
+
   // ============================================================
   // GET WORKFLOW
   // ============================================================
@@ -2566,11 +2466,12 @@ if (
           buildWorkflowApprovalData(targetWorkflow);
 
         const approvedWorkflow =
-  await workflowService.approveWorkflow(
-    id,
-    approvalData,
-    targetWorkflow
-  );
+          await workflowService.approveWorkflow(
+            id,
+            approvalData,
+            targetWorkflow
+          );
+
         if (
           !approvedWorkflow
         ) {
@@ -2609,92 +2510,94 @@ if (
       }
     };
 
-const refreshBackendWorkflows = async () => {
-  if (!user?.id && !user?.username) return;
+  const refreshBackendWorkflows = async () => {
+    if (!user?.id && !user?.username) return;
 
-  try {
-    const [normalResult, fileResult] = await Promise.allSettled([
-      workflowService.getWorkflows(),
-      fileAssignmentService.list(),
-    ]);
+    try {
+      const [normalResult, fileResult] = await Promise.allSettled([
+        workflowService.getWorkflows(),
+        fileAssignmentService.list(),
+      ]);
 
-    const normalWorkflows =
-      normalResult.status === 'fulfilled'
-        ? normalResult.value
-        : [];
+      const normalWorkflows =
+        normalResult.status === 'fulfilled'
+          ? normalResult.value
+          : [];
 
-    const fileWorkflows =
-      fileResult.status === 'fulfilled'
-        ? fileResult.value
-        : [];
+      const fileWorkflows =
+        fileResult.status === 'fulfilled'
+          ? fileResult.value
+          : [];
 
-    const mappedFileWorkflows: WorkflowItem[] = fileWorkflows.map((wf: any) => {
-      const draft = wf.draft || {};
-      const status =
-        wf.status === 'waiting_confirmation'
-          ? 'needs_clarification'
-          : wf.status;
-
-      return {
-        id: wf.id,
-        title: draft.title || draft.file_name || 'Assignment Document Upload',
-        description: draft.description || 'Upload existing assignment document to Moellim.',
-        courseId: wf.course,
-        courseName: wf.course,
-        status,
-        createdAt: new Date().toISOString(),
-        payload: {
-          workflowType: 'file_assignment',
-          fileAssignment: wf,
-          ...draft,
-        },
-      } as unknown as WorkflowItem;
-    });
-
-    const backendWorkflows = [
-      ...normalWorkflows,
-      ...mappedFileWorkflows,
-    ];
-
-    setWorkflows((current) => {
-      const backendById = new Map<string, WorkflowItem>();
-
-      backendWorkflows.forEach((workflow) => {
-        if (workflow?.id) backendById.set(workflow.id, workflow);
-      });
-
-      const merged = current.map((workflow) => {
-        const backendWorkflow = backendById.get(workflow.id);
-        if (!backendWorkflow) return workflow;
+      const mappedFileWorkflows: WorkflowItem[] = fileWorkflows.map((wf: any) => {
+        const draft = wf.draft || {};
+        const status =
+          wf.status === 'waiting_confirmation'
+            ? 'needs_clarification'
+            : wf.status;
 
         return {
-          ...workflow,
-          ...backendWorkflow,
-          payload: backendWorkflow.payload ?? workflow.payload,
-          steps: backendWorkflow.steps ?? workflow.steps,
-          detectedIntent: backendWorkflow.detectedIntent ?? workflow.detectedIntent,
-        };
+          id: wf.id,
+          title: draft.title || draft.file_name || 'Assignment Document Upload',
+          description: draft.description || 'Upload existing assignment document to Moellim.',
+          courseId: wf.course,
+          courseName: wf.course,
+          status,
+          createdAt: new Date().toISOString(),
+          payload: {
+            workflowType: 'file_assignment',
+            fileAssignment: wf,
+            ...draft,
+          },
+        } as unknown as WorkflowItem;
       });
 
-      const existingIds = new Set(current.map((workflow) => workflow.id));
-      const newBackendWorkflows = backendWorkflows.filter(
-        (workflow) => workflow?.id && !existingIds.has(workflow.id)
+      const backendWorkflows = [
+        ...normalWorkflows,
+        ...mappedFileWorkflows,
+      ];
+
+      setWorkflows((current) => {
+        const backendById = new Map<string, WorkflowItem>();
+
+        backendWorkflows.forEach((workflow) => {
+          if (workflow?.id) backendById.set(workflow.id, workflow);
+        });
+
+        const merged = current.map((workflow) => {
+          const backendWorkflow = backendById.get(workflow.id);
+          if (!backendWorkflow) return workflow;
+
+          return {
+            ...workflow,
+            ...backendWorkflow,
+            payload: backendWorkflow.payload ?? workflow.payload,
+            steps: backendWorkflow.steps ?? workflow.steps,
+            detectedIntent: backendWorkflow.detectedIntent ?? workflow.detectedIntent,
+          };
+        });
+
+        const existingIds = new Set(current.map((workflow) => workflow.id));
+        const newBackendWorkflows = backendWorkflows.filter(
+          (workflow) => workflow?.id && !existingIds.has(workflow.id)
+        );
+
+        return [...newBackendWorkflows, ...merged];
+      });
+
+      console.log(
+        '[AppContext] Workflow sync:',
+        normalWorkflows.length,
+        'normal,',
+        mappedFileWorkflows.length,
+        'file assignments'
       );
+    } catch (error) {
+      console.error('[AppContext] Failed to refresh backend workflows:', error);
+    }
+  };
 
-      return [...newBackendWorkflows, ...merged];
-    });
-
-    console.log(
-      '[AppContext] Workflow sync:',
-      normalWorkflows.length,
-      'normal,',
-      mappedFileWorkflows.length,
-      'file assignments'
-    );
-  } catch (error) {
-    console.error('[AppContext] Failed to refresh backend workflows:', error);
-  }
-};
+  // ============================================================
   // REAL BACKEND REJECTION
   // ============================================================
 
@@ -2883,10 +2786,6 @@ const refreshBackendWorkflows = async () => {
           );
         }
 
-        /*
-         * Ensure a bearer token still exists before attempting
-         * backend execution.
-         */
         const authToken =
           localStorage.getItem(
             'muawin_auth_token'
@@ -2898,44 +2797,44 @@ const refreshBackendWorkflows = async () => {
           );
         }
 
-if (
-  targetWorkflow.status ===
-  'waiting_approval'
-) {
-  onProgress?.(
-    0,
-    'Confirming teacher approval with MUAWIN backend...'
-  );
+        if (
+          targetWorkflow.status ===
+          'waiting_approval'
+        ) {
+          onProgress?.(
+            0,
+            'Confirming teacher approval with MUAWIN backend...'
+          );
 
-  const approvalData =
-          buildWorkflowApprovalData(targetWorkflow);
+          const approvalData =
+            buildWorkflowApprovalData(targetWorkflow);
 
-        const approvedWorkflow =
-    await workflowService.approveWorkflow(
-      id,
-      approvalData,
-      targetWorkflow
-    );
+          const approvedWorkflow =
+            await workflowService.approveWorkflow(
+              id,
+              approvalData,
+              targetWorkflow
+            );
 
-  if (
-    !approvedWorkflow
-  ) {
-    throw new Error(
-      'The MUAWIN backend did not confirm teacher approval.'
-    );
-  }
+          if (
+            !approvedWorkflow
+          ) {
+            throw new Error(
+              'The MUAWIN backend did not confirm teacher approval.'
+            );
+          }
 
-  targetWorkflow =
-    approvedWorkflow;
+          targetWorkflow =
+            approvedWorkflow;
 
-  setWorkflows((prev) =>
-    prev.map((w) =>
-      w.id === id
-        ? approvedWorkflow
-        : w
-    )
-  );
-}
+          setWorkflows((prev) =>
+            prev.map((w) =>
+              w.id === id
+                ? approvedWorkflow
+                : w
+            )
+          );
+        }
 
         setWorkflows((prev) =>
           prev.map((w) =>
@@ -3500,7 +3399,6 @@ if (
         w.status ===
         'waiting_approval'
     ).length;
-  
 
   const completedWorkflowsCount =
     workflows.filter(
@@ -3549,6 +3447,8 @@ if (
         workflows,
 
         activityLogs,
+
+        addActivityLog,
 
         currentLectureSession,
 
@@ -3642,5 +3542,3 @@ export const useApp = () => {
 
   return context;
 };
-
-

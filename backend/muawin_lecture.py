@@ -1717,12 +1717,14 @@ def verify_course_lecture_records(course_name, uploads):
 
 
 def scan_live_course_lecture_weeks(course_name):
-    """Read-only scan of weekly Moellim sections for uploaded lecture resources."""
+    """Read-only scan of weekly Moellim sections for uploaded lecture resources and current week."""
     if not MOELLIM_USERNAME or not MOELLIM_PASSWORD:
         raise RuntimeError("Moellim credentials are not configured.")
 
     weeks_with_lecture = []
     checked_weeks = []
+    sections_info = []
+    current_week = None
 
     with sync_playwright() as p:
         browser, context = launch_browser(p)
@@ -1741,6 +1743,32 @@ def scan_live_course_lecture_weeks(course_name):
                 locator = page.locator(f"#{section['section_id']}")
                 locator.wait_for(state="attached", timeout=10000)
                 checked_weeks.append(week)
+
+                # Detect Moellim's highlighted "Current week" section
+                is_current = False
+                try:
+                    cls = (locator.get_attribute("class") or "").lower().split()
+                    if "current" in cls:
+                        is_current = True
+                    elif locator.locator(".currentbadge, .badge:has-text('Current week')").count() > 0:
+                        is_current = True
+                    else:
+                        header_text = clean_text(
+                            locator.locator(".sectionname, h3, .course-section-header").first.inner_text(timeout=2000)
+                        )
+                        if "current week" in header_text.lower():
+                            is_current = True
+                except Exception:
+                    pass
+
+                if is_current:
+                    current_week = week
+
+                sections_info.append({
+                    "week": week,
+                    "heading": section.get("date_range") or "",
+                    "is_current": is_current,
+                })
 
                 selectors = [
                     "li.activity.modtype_resource",
@@ -1766,8 +1794,9 @@ def scan_live_course_lecture_weeks(course_name):
         "checked_weeks": sorted(set(checked_weeks)),
         "weeks_with_lecture": sorted(set(weeks_with_lecture)),
         "has_any_lecture": bool(weeks_with_lecture),
+        "current_week": current_week,
+        "sections": sections_info,
     }
-
 
 
 

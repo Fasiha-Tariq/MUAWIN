@@ -1,5 +1,4 @@
-﻿
-import React, { useState } from 'react';
+﻿import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ShieldCheck,
@@ -9,7 +8,6 @@ import {
   Play,
   AlertTriangle,
   Filter,
-  Calendar,
   FileText,
   BookOpen,
   Layers,
@@ -105,10 +103,12 @@ export const Approvals: React.FC = () => {
   const navigate = useNavigate();
 
   const {
+    user,
     courses,
     workflows,
     rejectWorkflow,
     executeWorkflowDirectly,
+    addActivityLog,
     addToast,
   } = useApp();
 
@@ -208,6 +208,7 @@ export const Approvals: React.FC = () => {
         'pending',
         'approved',
         'executing',
+        'running',
       ].includes(approvalStatus)
     ) {
       return false;
@@ -346,6 +347,33 @@ export const Approvals: React.FC = () => {
             'Moellim did not confirm successful assignment upload.'
           );
         }
+
+        const courseName =
+          execution.result?.course ||
+          workflow.courseCode ||
+          (workflow as any).courseName ||
+          '';
+
+        const weekNum =
+          execution.result?.week_number ??
+          workflowPayload.week_number ??
+          asRecord(workflowPayload.fileAssignment).draft?.week_number;
+
+        addActivityLog({
+          courseCode: courseName,
+          courseTitle: courseName,
+          action: 'Action Completed',
+          workflowName:
+            execution.result?.title ||
+            workflow.title ||
+            'Assignment Document Upload',
+          status: 'Verified',
+          operator: `${user?.name || user?.username || 'MUAWIN Teacher'} (Verified)`,
+          details:
+            execution.result?.message ||
+            `Assignment uploaded and verified${weekNum ? ` in Week ${weekNum}` : ''}.`,
+          moellimRef: workflow.id,
+        });
       } else {
         success = await executeWorkflowDirectly(
           workflow.id,
@@ -409,7 +437,6 @@ export const Approvals: React.FC = () => {
         '[Approvals] Could not reject workflow:',
         error
       );
-      // Keep the rejection dialog open so the teacher can retry.
     }
   };
 
@@ -461,33 +488,20 @@ export const Approvals: React.FC = () => {
     );
   };
 
+  const actionableCount = pendingWorkflows.filter(
+    (workflow) => workflow.status !== 'needs_clarification'
+  ).length;
+
   return (
     <div className="mx-auto max-w-5xl animate-in fade-in duration-200 space-y-6">
-      {/* Page header */}
-      <div className="flex flex-col gap-3 border-b border-slate-200/80 pb-5 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-
-          <h2 className="text-2xl font-extrabold tracking-tight text-slate-900">
-            Pending Approvals
-          </h2>
-
-          <p className="mt-0.5 text-xs text-slate-500">
-            Review the proposed content and target course before
-            authorizing actions on Moellim.
-          </p>
-        </div>
-
-        <span className="rounded-xl border border-amber-200 bg-amber-100 px-3 py-1.5 text-xs font-bold text-amber-900">
-          {pendingWorkflows.filter(
-            (workflow) => workflow.status !== 'needs_clarification'
-          ).length} Action
-          {pendingWorkflows.filter(
-            (workflow) => workflow.status !== 'needs_clarification'
-          ).length === 1 ? '' : 's'} Pending
+      {/* Top status badge */}
+      <div className="flex justify-end">
+        <span className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-bold text-blue-700">
+          {actionableCount} Action{actionableCount === 1 ? '' : 's'} Pending
         </span>
       </div>
 
-      {/* Course filter */}
+      {/* Course filter dropdown */}
       <div className="flex flex-col justify-between gap-3 rounded-2xl border border-slate-200/90 bg-white p-4 shadow-xs sm:flex-row sm:items-center">
         <div className="flex items-center gap-2">
           <Filter className="h-4 w-4 text-slate-400" />
@@ -496,32 +510,18 @@ export const Approvals: React.FC = () => {
           </span>
         </div>
 
-        <div className="flex flex-wrap gap-1.5">
-          <button
-            onClick={() => setActiveCourseFilter('all')}
-            className={`rounded-xl px-3 py-1.5 text-xs font-bold transition-all ${
-              activeCourseFilter === 'all'
-                ? 'bg-blue-600 text-white'
-                : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-            }`}
-          >
-            All My Courses ({courses.length})
-          </button>
-
+        <select
+          value={activeCourseFilter}
+          onChange={(e) => setActiveCourseFilter(e.target.value)}
+          className="text-xs bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 font-semibold text-slate-700 focus:outline-blue-600 sm:min-w-[260px] cursor-pointer"
+        >
+          <option value="all">All My Courses ({courses.length})</option>
           {courses.map((course) => (
-            <button
-              key={course.id}
-              onClick={() => setActiveCourseFilter(course.id)}
-              className={`rounded-xl px-3 py-1.5 text-xs font-bold transition-all ${
-                activeCourseFilter === course.id
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-              }`}
-            >
-              {course.code} ({course.section})
-            </button>
+            <option key={course.id} value={course.id}>
+              {course.code}{course.section ? ` (${course.section})` : ''}
+            </option>
           ))}
-        </div>
+        </select>
       </div>
 
       {/* Workflows waiting for a prerequisite */}
@@ -555,9 +555,7 @@ export const Approvals: React.FC = () => {
       )}
 
       {/* Pending approvals */}
-      {pendingWorkflows.filter(
-        (workflow) => workflow.status !== 'needs_clarification'
-      ).length === 0 ? (
+      {actionableCount === 0 ? (
         <div className="space-y-3 rounded-2xl border border-slate-200 bg-white p-12 text-center">
           <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl border border-emerald-200 bg-emerald-50 text-emerald-600">
             <CheckCircle2 className="h-6 w-6" />
@@ -576,14 +574,14 @@ export const Approvals: React.FC = () => {
           <div className="flex justify-center gap-2 pt-2">
             <button
               onClick={() => navigate('/assistant')}
-              className="rounded-xl bg-blue-600 px-4 py-2 text-xs font-bold text-white transition-colors hover:bg-blue-700"
+              className="rounded-xl bg-blue-600 px-4 py-2 text-xs font-bold text-white transition-colors hover:bg-blue-700 cursor-pointer"
             >
               Ask MUAWIN
             </button>
 
             <button
               onClick={() => navigate('/dashboard')}
-              className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-bold text-slate-700 transition-colors hover:bg-slate-100"
+              className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-bold text-slate-700 transition-colors hover:bg-slate-100 cursor-pointer"
             >
               Back to Dashboard
             </button>
@@ -595,7 +593,8 @@ export const Approvals: React.FC = () => {
             .filter((workflow) => workflow.status !== 'needs_clarification')
             .map((workflow) => {
             const isCurrentlyExecuting =
-              executingWorkflowId === workflow.id;
+              executingWorkflowId === workflow.id ||
+              String(workflow.status || '').toLowerCase() === 'running';
 
             const {
               payload,
@@ -734,7 +733,8 @@ export const Approvals: React.FC = () => {
                       <p className="mt-1 whitespace-pre-wrap text-sm text-amber-800">
                         {payload.clarification_question ||
                          (workflow as any).clarification_question ||
-                         workflow.error ||
+                         payload.error ||
+                         (workflow as any).error ||
                          'Please provide the missing assignment details.'}
                       </p>
                     </div>
@@ -1146,7 +1146,7 @@ export const Approvals: React.FC = () => {
                   )}
 
                   {/* Live execution feedback */}
-                  {isCurrentlyExecuting && executionLog && (
+                  {isCurrentlyExecuting && (
                     <div className="space-y-2 rounded-xl border border-blue-200 bg-blue-50 p-3.5">
                       <div className="flex items-center gap-2 text-xs font-bold text-blue-900">
                         <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-blue-600" />
@@ -1154,7 +1154,11 @@ export const Approvals: React.FC = () => {
                       </div>
 
                       <p className="font-mono text-xs text-blue-800">
-                        Step {executionLog.step}: {executionLog.message}
+                        {executionLog
+                          ? `Step ${executionLog.step}: ${executionLog.message}`
+                          : (workflow as any).progress_message ||
+                            asRecord(workflow.payload).progress_message ||
+                            'Uploading and verifying assignment on Moellim...'}
                       </p>
                     </div>
                   )}
@@ -1173,7 +1177,7 @@ export const Approvals: React.FC = () => {
                       <button
                         onClick={() => setRejectingWorkflow(workflow)}
                         disabled={isCurrentlyExecuting}
-                        className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-rose-200 px-4 py-2.5 text-xs font-bold text-rose-700 transition-colors hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+                        className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-rose-200 px-4 py-2.5 text-xs font-bold text-rose-700 transition-colors hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto cursor-pointer"
                       >
                         <XCircle className="h-4 w-4" />
                         Reject
@@ -1185,7 +1189,7 @@ export const Approvals: React.FC = () => {
                           isCurrentlyExecuting ||
                           workflow.status === 'needs_clarification'
                         }
-                        className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-emerald-600 px-5 py-2.5 text-xs font-bold text-white shadow-xs transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+                        className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-emerald-600 px-5 py-2.5 text-xs font-bold text-white shadow-xs transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto cursor-pointer"
                       >
                         <Play className="h-3.5 w-3.5 fill-current" />
                         {isCurrentlyExecuting
@@ -1244,14 +1248,14 @@ export const Approvals: React.FC = () => {
                   setRejectingWorkflow(null);
                   setRejectionReason('');
                 }}
-                className="rounded-xl px-3.5 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100"
+                className="rounded-xl px-3.5 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 cursor-pointer"
               >
                 Cancel
               </button>
 
               <button
                 onClick={handleConfirmReject}
-                className="rounded-xl bg-rose-600 px-4 py-2 text-xs font-bold text-white hover:bg-rose-700"
+                className="rounded-xl bg-rose-600 px-4 py-2 text-xs font-bold text-white hover:bg-rose-700 cursor-pointer"
               >
                 Confirm Rejection
               </button>
@@ -1262,6 +1266,3 @@ export const Approvals: React.FC = () => {
     </div>
   );
 };
-
-
-

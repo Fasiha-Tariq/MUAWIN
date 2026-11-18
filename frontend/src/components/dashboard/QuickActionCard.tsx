@@ -18,23 +18,23 @@ export const QuickActionCard: React.FC<QuickActionCardProps> = ({
   variant,
   onClick
 }) => {
-  const styles = {
+    const styles = {
     primary: {
-      card: 'bg-gradient-to-br from-blue-700 to-blue-900 text-white border-blue-800 shadow-md shadow-blue-950/10',
-      iconBox: 'bg-white/10 text-white',
-      button: 'bg-white text-blue-900 hover:bg-blue-50 active:bg-blue-100 font-semibold shadow-xs',
-      textMuted: 'text-blue-100'
+      card: 'bg-blue-50 border-blue-200 hover:bg-blue-100 hover:border-blue-300 shadow-sm text-slate-900',
+      iconBox: 'bg-blue-100 text-blue-700 border border-blue-200',
+      button: 'bg-blue-600 text-white hover:bg-blue-700 font-semibold shadow-xs',
+      textMuted: 'text-slate-600'
     },
     accent: {
-      card: 'bg-white border-slate-200 hover:border-slate-300 shadow-sm text-slate-900',
-      iconBox: 'bg-rose-50 text-rose-600 border border-rose-100',
-      button: 'bg-slate-900 text-white hover:bg-slate-800 font-semibold shadow-xs',
+      card: 'bg-violet-50 border-violet-200 hover:bg-violet-100 hover:border-violet-300 shadow-sm text-slate-900',
+      iconBox: 'bg-violet-100 text-violet-700 border border-violet-200',
+      button: 'bg-violet-600 text-white hover:bg-violet-700 font-semibold shadow-xs',
       textMuted: 'text-slate-600'
     },
     secondary: {
-      card: 'bg-white border-slate-200 hover:border-slate-300 shadow-sm text-slate-900',
-      iconBox: 'bg-amber-50 text-amber-600 border border-amber-100',
-      button: 'bg-amber-500 hover:bg-amber-600 text-white font-semibold shadow-xs',
+      card: 'bg-teal-50 border-teal-200 hover:bg-teal-100 hover:border-teal-300 shadow-sm text-slate-900',
+      iconBox: 'bg-teal-100 text-teal-700 border border-teal-200',
+      button: 'bg-teal-600 text-white hover:bg-teal-700 font-semibold shadow-xs',
       textMuted: 'text-slate-600'
     }
   }[variant];

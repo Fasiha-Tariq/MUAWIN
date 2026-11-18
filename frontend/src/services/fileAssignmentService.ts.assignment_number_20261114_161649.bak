@@ -1,0 +1,88 @@
+﻿import { api } from './api';
+
+export interface FileAssignmentDraft {
+  file_name?: string;
+  title?: string;
+  description?: string;
+  instructions?: string;
+  rubric_notes?: string;
+  week_number?: number;
+  week_numbers?: number[];
+  start_date?: string;
+  due_date?: string;
+  total_marks?: number;
+  clos?: string[];
+  [key: string]: any;
+}
+
+export interface FileAssignmentWorkflow {
+  id: string;
+  workflow_type: 'file_assignment';
+  status: string;
+  course: string;
+  candidates?: FileAssignmentDraft[];
+  draft?: FileAssignmentDraft;
+  missing_fields?: string[];
+  clarification_question?: string | null;
+  error?: string | null;
+  result?: any;
+}
+
+async function unwrap<T>(promise: Promise<any>): Promise<T> {
+  const response = await promise;
+  if (response?.success === false) {
+    throw new Error(response.message || response.error || 'File assignment request failed.');
+  }
+  return (response?.data ?? response) as T;
+}
+
+export const fileAssignmentService = {
+  prepare(course: string, file_name?: string) {
+    return unwrap<FileAssignmentWorkflow>(
+      api.post('/file-assignment-workflows/prepare', { course, file_name })
+    );
+  },
+
+  list() {
+    return unwrap<FileAssignmentWorkflow[]>(
+      api.get('/file-assignment-workflows')
+    );
+  },
+
+  get(id: string) {
+    return unwrap<FileAssignmentWorkflow>(
+      api.get(`/file-assignment-workflows/${encodeURIComponent(id)}`)
+    );
+  },
+
+  confirm(id: string, details: {
+    file_name: string;
+    week_number?: number;
+    title?: string;
+    start_date?: string;
+    due_date?: string;
+    total_marks?: number;
+  }) {
+    return unwrap<FileAssignmentWorkflow>(
+      api.post(`/file-assignment-workflows/${encodeURIComponent(id)}/confirm`, details)
+    );
+  },
+
+  approve(id: string) {
+    return unwrap<FileAssignmentWorkflow>(
+      api.post(`/file-assignment-workflows/${encodeURIComponent(id)}/approve`, {})
+    );
+  },
+
+  execute(id: string) {
+    return unwrap<FileAssignmentWorkflow>(
+      api.post(`/file-assignment-workflows/${encodeURIComponent(id)}/execute`, {})
+    );
+  },
+
+  reject(id: string) {
+    return unwrap<FileAssignmentWorkflow>(
+      api.post(`/file-assignment-workflows/${encodeURIComponent(id)}/reject`, {})
+    );
+  },
+};

@@ -1,3 +1,4 @@
+﻿
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AppProvider } from './context/AppContext';
@@ -12,21 +13,27 @@ import { Workflows } from './pages/Workflows';
 import { ActivityLogs } from './pages/ActivityLogs';
 import { Settings } from './pages/Settings';
 import { Help } from './pages/Help';
+import { CourseSetup } from './pages/CourseSetup';
+import { WeeklyTracker } from './pages/WeeklyTracker';
+import { Reminders } from './pages/Reminders';
 
 export default function App() {
   return (
     <AppProvider>
       <BrowserRouter>
         <Routes>
-          {/* Public Login Route */}
+          {/* Public Login Routes */}
+          <Route path="/" element={<Navigate to="/login" replace />} />
           <Route path="/login" element={<Login />} />
 
-          {/* Protected Application Routes under AppLayout Shell */}
+          {/* Protected Application Routes */}
           <Route element={<AppLayout />}>
-            <Route path="/" element={<Navigate to="/dashboard" replace />} />
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/assistant" element={<Assistant />} />
             <Route path="/lecture" element={<LectureSession />} />
+            <Route path="/setup" element={<CourseSetup />} />
+            <Route path="/tracker" element={<WeeklyTracker />} />
+            <Route path="/reminders" element={<Reminders />} />
             <Route path="/approvals" element={<Approvals />} />
             <Route path="/approvals/:id" element={<Approvals />} />
             <Route path="/workflows" element={<Workflows />} />
@@ -37,9 +44,11 @@ export default function App() {
           </Route>
 
           {/* Catch-all */}
-          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
       </BrowserRouter>
     </AppProvider>
   );
 }
+
+

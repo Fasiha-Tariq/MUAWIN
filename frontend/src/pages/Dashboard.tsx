@@ -143,7 +143,7 @@ console.log(
             </span>
           </div>
 
-          <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
+          <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight">
             Welcome, {user?.name || 'Teacher'}
           </h2>
 
@@ -162,41 +162,35 @@ console.log(
           </span>
         </div>
       </div>
-
-      {/* =====================================================
+{/* =====================================================
           ACTIVE COURSE CONTEXT
       ====================================================== */}
       {selectedCourse && !coursesLoading && (
-        <div className="bg-gradient-to-r from-blue-900 via-indigo-900 to-slate-900 text-white rounded-2xl p-4 sm:p-6 shadow-md border border-blue-800/60 relative overflow-hidden">
-          <div className="absolute right-0 top-0 w-80 h-full bg-white/5 skew-x-12 pointer-events-none" />
+        <div className="bg-gradient-to-r from-blue-50/90 via-indigo-50/70 to-white text-slate-900 rounded-2xl p-4 sm:p-5 shadow-sm border border-blue-200/80 relative overflow-hidden">
+          <div className="absolute right-0 top-0 w-80 h-full bg-blue-500/[0.04] skew-x-12 pointer-events-none" />
 
           <div className="relative z-10 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
             <div className="min-w-0">
-              <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                <span className="text-[10px] font-extrabold uppercase tracking-wider bg-blue-500/20 text-blue-200 border border-blue-400/30 px-2 py-0.5 rounded">
+              <div className="flex items-center gap-2 mb-1 flex-wrap">
+                <span className="text-[10px] font-extrabold uppercase tracking-wider bg-blue-100/80 text-blue-700 border border-blue-200 px-2 py-0.5 rounded">
                   Current Active Course Context
                 </span>
 
-                <span className="text-xs text-blue-200/80 font-medium">
+                <span className="text-xs text-slate-500 font-medium">
                   {selectedCourse.section || 'Current Section'} •{' '}
                   {selectedCourse.studentsCount} Students
                 </span>
               </div>
 
-              <h3 className="text-lg sm:text-2xl font-black text-white tracking-tight break-words">
+              <h3 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight break-words">
                 {selectedCourse.code} — {selectedCourse.title}
               </h3>
-
-              <p className="text-xs text-blue-100/80 mt-1 max-w-xl">
-                Any workflows initiated in AI Assistant or Class Mode
-                will automatically bind to this section.
-              </p>
             </div>
 
             <div className="flex flex-wrap items-center gap-2 shrink-0">
               <button
                 onClick={() => navigate('/lecture')}
-                className="px-3.5 py-2 text-xs font-bold bg-white text-slate-900 hover:bg-blue-50 rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
+                className="px-3.5 py-2 text-xs font-bold bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 hover:text-slate-900 rounded-xl shadow-2xs transition-colors flex items-center gap-1.5 cursor-pointer"
               >
                 <Mic2 className="w-3.5 h-3.5 text-rose-500" />
                 <span>Class Mode</span>
@@ -211,17 +205,10 @@ console.log(
                     },
                   })
                 }
-                className="px-3.5 py-2 text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
+                className="px-3.5 py-2 text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
               >
                 <Sparkles className="w-3.5 h-3.5 text-amber-300" />
                 <span>Ask MUAWIN</span>
-              </button>
-
-              <button
-                onClick={() => handleOpenLectures(selectedCourse)}
-                className="px-3 py-2 text-xs font-semibold bg-white/10 hover:bg-white/20 text-white border border-white/20 rounded-xl transition-colors cursor-pointer"
-              >
-                Lectures History
               </button>
             </div>
           </div>
@@ -233,122 +220,14 @@ console.log(
       ====================================================== */}
       <ClassModeStatusCard />
 
-      {/* =====================================================
-          PRIMARY WORKFLOW ACTIONS
-      ====================================================== */}
-      <div>
-        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">
-          Primary Workflow Actions
-        </h3>
+      
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 sm:gap-4">
-          <QuickActionCard
-            title="Command Mode"
-            description={`Give MUAWIN a direct text or voice instruction (e.g. "Upload Lecture 2 and create an assignment") for ${
-              selectedCourse?.code || 'active course'
-            }.`}
-            buttonLabel="Open Command Mode"
-            icon={Sparkles}
-            variant="primary"
-            onClick={() => navigate('/assistant')}
-          />
-
-          <QuickActionCard
-            title="Class Mode"
-            description="Automatic lecture operating mode triggered by your timetable schedule. Transcribes in-class speech & extracts directives in real-time."
-            buttonLabel="Open Class Mode"
-            icon={Mic2}
-            variant="accent"
-            onClick={() => navigate('/lecture')}
-          />
-
-          <QuickActionCard
-            title="Teacher Approvals"
-            description={`Review ${stats.pendingApprovals} action${
-              stats.pendingApprovals === 1 ? '' : 's'
-            } waiting for your explicit teacher authorization before touching Moellim.`}
-            buttonLabel="Review Approvals"
-            icon={CheckSquare}
-            variant="secondary"
-            onClick={() => navigate('/approvals')}
-          />
-        </div>
-      </div>
-
-      <div>
-        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">
-          Quick Access
-        </h3>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4">
-          <QuickActionCard title="Course Setup" description="Upload course outline, confirm weekly topics and choose the lecture folder." buttonLabel="Open Course Setup" icon={BookOpen} variant="secondary" onClick={() => navigate('/setup')} />
-          <QuickActionCard title="Weekly Tracker" description="Track expected lectures against completed Moellim uploads." buttonLabel="Track Progress" icon={Activity} variant="secondary" onClick={() => navigate('/tracker')} />
-          <QuickActionCard title="Reminders" description="Review, acknowledge, snooze or dismiss missed-work reminders." buttonLabel="Open Reminders" icon={Clock} variant="secondary" onClick={() => navigate('/reminders')} />
-          <QuickActionCard title="Lecture Upload" description="Prepare a lecture resource for a course section through the teacher-approved command workflow." buttonLabel="Prepare Lecture" icon={BookOpen} variant="secondary" onClick={() => navigate('/assistant')} />
-          <QuickActionCard title="Assignment Builder" description="Generate and review an assignment with marks, question types and a deadline." buttonLabel="Create Assignment" icon={FileText} variant="secondary" onClick={() => navigate('/assistant')} />
-          <QuickActionCard title="Combined Workflow" description="Prepare a lecture upload and a related assignment in one supervised workflow." buttonLabel="Create Combined Plan" icon={Sparkles} variant="secondary" onClick={() => navigate('/assistant')} />
-        </div>
-      </div>
+      
 
       {/* =====================================================
           ACADEMIC WORKFLOW METRICS
       ====================================================== */}
-      <div>
-        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">
-          Academic Workflow Metrics
-        </h3>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-          <StatCard
-            title="Assigned Courses"
-            value={coursesLoading ? '—' : stats.activeCourses}
-            subtitle={
-              coursesLoading
-                ? 'Loading from Moellim...'
-                : 'Current Moellim roster'
-            }
-            icon={<BookOpen className="w-4 h-4" />}
-            accentColor="blue"
-            badgeText={
-              coursesLoading ? 'Loading' : 'Enrolled Roster'
-            }
-          />
-
-          <StatCard
-            title="Pending Approvals"
-            value={stats.pendingApprovals}
-            subtitle="Require instructor sign-off"
-            icon={<Clock className="w-4 h-4" />}
-            accentColor="amber"
-            badgeText={
-              stats.pendingApprovals > 0
-                ? 'Action Needed'
-                : 'All Clear'
-            }
-            onClick={() => navigate('/approvals')}
-          />
-
-          <StatCard
-            title="Completed Workflows"
-            value={stats.completedWorkflows}
-            subtitle="Executed on Moellim"
-            icon={<CheckCircle2 className="w-4 h-4" />}
-            accentColor="emerald"
-            badgeText="Verified"
-            onClick={() => navigate('/workflows')}
-          />
-
-          <StatCard
-            title="Lectures Processed"
-            value={stats.lecturesProcessed}
-            subtitle="Transcribed & Analyzed"
-            icon={<Activity className="w-4 h-4" />}
-            accentColor="purple"
-            badgeText="Audio Sync"
-            onClick={() => navigate('/lecture')}
-          />
-        </div>
-      </div>
-
+      
       {/* =====================================================
           PENDING APPROVALS + RECENT ACTIVITY
       ====================================================== */}

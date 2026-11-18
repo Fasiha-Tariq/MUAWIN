@@ -13,6 +13,9 @@ export const UpcomingClassAlert: React.FC = () => {
     classModeStatus 
   } = useApp();
 
+  // Hidden for now
+  return null;
+
   // If not in 5-minute warning window or already dismissed, do not render
   if (!upcomingWarningActive) return null;
 

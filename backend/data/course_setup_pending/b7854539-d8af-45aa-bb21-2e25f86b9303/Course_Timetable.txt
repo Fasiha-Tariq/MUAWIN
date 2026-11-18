@@ -1,0 +1,1 @@
+COURSE TIMETABLE\nCourse: CS7 MUAWIN (Female)\nTimezone: Asia/Karachi\n\nWeek 1: 00–02:30\nExpected: Yes\n\nWeek 9: 00–10:30\nDue date: 2026-11-11\nExpected: Yes\n\nWeek 10: 00–11:30\nExpected: Yes\n\nWeek 11: 00–12:30\nDue date: 2026-11-27\nExpected: Yes\n\nWeek 12: 00–01:30\nExpected: Yes\n\n

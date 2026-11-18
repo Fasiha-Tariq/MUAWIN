@@ -49,6 +49,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        "http://172.19.224.1:3000"
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -62,23 +63,43 @@ async def persist_workflow_audit(request: Request, call_next):
     started = datetime.now(timezone.utc)
     response = await call_next(request)
     path = request.url.path
-    tracked = ("/api/workflows", "/api/assignment-workflows",
-               "/api/combined-workflows", "/api/integrations/google-drive")
+    tracked = (
+        "/api/workflows",
+        "/api/assignment-workflows",
+        "/api/combined-workflows",
+        "/api/file-assignment-workflows",
+        "/api/integrations/google-drive",
+    )
     if any(path.startswith(prefix) for prefix in tracked):
         try:
             auth = request.headers.get("authorization", "")
             token = auth[7:].strip() if auth.startswith("Bearer ") else ""
             session = user_sessions.get(token) if token else None
             if session and session.get("username"):
-                workflow_id = next((part for part in path.split("/")
-                                    if part.startswith(("wf-", "awf-", "cwf-"))), None)
+                workflow_id = next(
+                    (part for part in path.split("/")
+                     if part.startswith(("wf-", "awf-", "cwf-", "fawf-"))),
+                    None,
+                )
                 status = "Completed" if response.status_code < 400 else "Failed"
                 action = f"{request.method} {path}"
-                details = {"http_status": response.status_code,
-                           "duration_seconds": round((datetime.now(timezone.utc)-started).total_seconds(), 3)}
-                course = None; week = None; file_name = None
-                stores = (workflows, assignment_workflows, combined_workflows)
+                details = {
+                    "http_status": response.status_code,
+                    "duration_seconds": round(
+                        (datetime.now(timezone.utc) - started).total_seconds(), 3
+                    ),
+                }
+                course = None
+                week = None
+                file_name = None
+                stores = (
+                    workflows,
+                    assignment_workflows,
+                    combined_workflows,
+                    file_assignment_workflows,
+                )
                 candidates = [store.get(workflow_id) for store in stores] if workflow_id else []
+
                 def find_value(obj, keys):
                     if isinstance(obj, dict):
                         for key in keys:
@@ -87,12 +108,15 @@ async def persist_workflow_audit(request: Request, call_next):
                                 return value
                         for value in obj.values():
                             found = find_value(value, keys)
-                            if found: return found
+                            if found:
+                                return found
                     elif isinstance(obj, list):
                         for value in obj:
                             found = find_value(value, keys)
-                            if found: return found
+                            if found:
+                                return found
                     return None
+
                 wf = next((item for item in candidates if item), {})
                 workflow_status = str(wf.get("status") or "").lower() if isinstance(wf, dict) else ""
                 if workflow_status in {"failed", "error", "rejected", "cancelled"}:
@@ -103,14 +127,18 @@ async def persist_workflow_audit(request: Request, call_next):
                 if file_value:
                     file_name = Path(str(file_value)).name
                 audit_store.record_event(
-                    teacher_username=session["username"], action=action,
-                    status=status, workflow_id=workflow_id, course=str(course) if course else None,
+                    teacher_username=session["username"],
+                    action=action,
+                    status=status,
+                    workflow_id=workflow_id,
+                    course=str(course) if course else None,
                     week=int(week) if str(week).isdigit() else None,
-                    file_name=file_name, details=details)
+                    file_name=file_name,
+                    details=details,
+                )
         except Exception as exc:
             print(f"[AUDIT] Could not persist request event: {exc}")
     return response
-
 
 # ============================================================
 # IN-MEMORY STORES
@@ -172,6 +200,7 @@ class CombinedApproveRequest(BaseModel):
     assignment_title: Optional[str] = None
     assignment_description: Optional[str] = None
 
+
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -203,8 +232,11 @@ def make_workflow_id() -> str:
 def make_assignment_workflow_id() -> str:
     return f"awf-{uuid.uuid4().hex[:10]}"
 
+
 def make_combined_workflow_id() -> str:
     return f"cwf-{uuid.uuid4().hex[:10]}"
+
+
 # ============================================================
 # JSON-SAFE CONVERSION
 # ============================================================
@@ -281,9 +313,8 @@ def make_json_safe(value: Any) -> Any:
 # Normalize Urdu/Arabic digits while preserving Urdu script.
 def normalize_command_text(instruction: str) -> str:
     text = str(instruction or "").lower().strip()
-    digit_map = str.maketrans("????????????????????", "01234567890123456789")
+    digit_map = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
     return " ".join(text.translate(digit_map).split())
-
 
 
 def is_assignment_instruction(
@@ -308,11 +339,11 @@ def is_assignment_instruction(
         "new assignment",
         "assignment",
         "homework",
-        "????????",
-        "???????",
-        "???????? ??????",
-        "???????? ???? ????",
-        "???????? ????",
+        "اسائنمنٹ",
+        "اسائمنٹ",
+        "اسائنمنٹ بنائیں",
+        "اسائنمنٹ تیار کریں",
+        "اسائنمنٹ دیں",
     ]
 
     return any(
@@ -349,13 +380,13 @@ def is_lecture_instruction(instruction: str) -> bool:
         "add lecture material",
         "add notes",
         "add notes to moellim",
-        "????? ????? ????",
-        "????? ????? ???",
-        "????? ?? ??? ????",
-        "????? ???? ????",
-        "????? ??????",
-        "????? ????? ?? ????? ????",
-        "????? ?????",
+        "لیکچر اپلوڈ کریں",
+        "لیکچر اپلوڈ کرو",
+        "لیکچر اپ لوڈ کریں",
+        "لیکچر شامل کریں",
+        "لیکچر ڈالیں",
+        "لیکچر نوٹس اپلوڈ کریں",
+        "نوٹس اپلوڈ کریں",
     ]
 
     if any(phrase in text for phrase in lecture_phrases):
@@ -442,7 +473,6 @@ def workflow_public_state(
         ),
         "error": wf.get("error"),
     }
-
 
 
 # ============================================================
@@ -538,6 +568,8 @@ def create_combined_steps():
         {"id": "create", "label": "Create assignment in target week", "status": "pending"},
         {"id": "verify", "label": "Verify assignment", "status": "pending"},
     ]
+
+
 # ============================================================
 # STEP HELPERS
 # ============================================================
@@ -859,6 +891,8 @@ def extract_assignment_source_lecture(
         if match
         else None
     )
+
+
 def find_matching_lecture_workflow(
     session_token: str,
     assignment_parsed: dict[str, Any],
@@ -1093,7 +1127,7 @@ def find_matching_lecture_workflow(
         # ----------------------------------------------------
 
         print(
-            "\n[DEPENDENCY MATCH] âœ“ MATCH FOUND:"
+            "\n[DEPENDENCY MATCH] ✓ MATCH FOUND:"
         )
 
         print(
@@ -1119,7 +1153,7 @@ def find_matching_lecture_workflow(
     if not candidates:
 
         print(
-            "\n[DEPENDENCY MATCH] âœ— NO MATCH FOUND."
+            "\n[DEPENDENCY MATCH] ✗ NO MATCH FOUND."
         )
 
         print(
@@ -1132,6 +1166,8 @@ def find_matching_lecture_workflow(
 
     # Most recently created matching lecture workflow.
     return candidates[-1]
+
+
 def mark_dependency_task_done(
     task: asyncio.Task,
 ):
@@ -1403,6 +1439,7 @@ async def prepare_assignment_after_lecture(
             ASSIGNMENT_DEPENDENCY_POLL_SECONDS
         )
 
+
 def schedule_assignment_dependency(
     assignment_wf: dict[str, Any],
     lecture_wf: dict[str, Any],
@@ -1445,6 +1482,7 @@ def select_course_lecture_file(lecture_name: str, course_name: str, session: dic
         raise RuntimeError(f"No matching lecture found in the saved folder for '{course}'.")
 
     return selector, file_path
+
 
 # ============================================================
 # AUTHENTICATION / SESSION HELPERS
@@ -1959,8 +1997,8 @@ def authenticate_moellim_sync(
     password: str,
 ):
     print(
-    "[COMBINED PREPARE] Running on thread:",
-    threading.current_thread().name,
+        "[COMBINED PREPARE] Running on thread:",
+        threading.current_thread().name,
     )
     p = sync_playwright().start()
 
@@ -1989,7 +2027,7 @@ def authenticate_moellim_sync(
         moodle.login(username, password)
 
         print(
-            f"âœ“ Logged in to Moellim as "
+            f"✓ Logged in to Moellim as "
             f"{username}"
         )
 
@@ -2387,7 +2425,6 @@ async def root():
     }
 
 
-
 # ============================================================
 # LOGIN
 # ============================================================
@@ -2410,7 +2447,7 @@ async def auth_login(request: LoginRequest):
             password,
         )
 
-        # Diagnostic logging â€” never print the password.
+        # Diagnostic logging — never print the password.
         courses = result.get("courses", [])
 
         print("\n========== MUAWIN LOGIN DIAGNOSTICS ==========")
@@ -2460,6 +2497,7 @@ async def auth_login(request: LoginRequest):
             status_code=401,
             detail=str(exc),
         )
+
 
 # ============================================================
 # INTERPRET INSTRUCTION
@@ -3112,7 +3150,7 @@ async def prepare_workflow(
         )
 
         print(
-            "\nâœ“ Parsed request:"
+            "\n✓ Parsed request:"
             f"\n  Course: {parsed.get('course')}"
             f"\n  Week: {parsed.get('week')}"
             f"\n  Lecture: {parsed.get('lecture')}"
@@ -3140,7 +3178,7 @@ async def prepare_workflow(
         )
 
         print(
-            f"\nâœ“ Workflow prepared: "
+            f"\n✓ Workflow prepared: "
             f"{workflow_id}"
         )
 
@@ -3252,7 +3290,7 @@ def prepare_moellim_workflow_sync(
         moodle.login(session.get('username'), session.get('password'))
 
         print(
-            f"âœ“ Logged into Moellim as "
+            f"✓ Logged into Moellim as "
             f"{session['username']}."
         )
 
@@ -3287,7 +3325,7 @@ def prepare_moellim_workflow_sync(
         )
 
         print(
-            f"âœ“ Course found: "
+            f"✓ Course found: "
             f"{course_name}"
         )
 
@@ -3315,7 +3353,7 @@ def prepare_moellim_workflow_sync(
         )
 
         print(
-            f"âœ“ Course opened: "
+            f"✓ Course opened: "
             f"{course_name}"
         )
 
@@ -3327,7 +3365,7 @@ def prepare_moellim_workflow_sync(
         moodle.ensure_edit_mode()
 
         print(
-            "âœ“ Edit mode ready."
+            "✓ Edit mode ready."
         )
 
         print(
@@ -3342,7 +3380,7 @@ def prepare_moellim_workflow_sync(
         if week_info:
 
             print(
-                f"âœ“ Week {week} found."
+                f"✓ Week {week} found."
             )
 
         else:
@@ -3379,7 +3417,7 @@ def prepare_moellim_workflow_sync(
         )
 
         print(
-            f"âœ“ Lecture material found: "
+            f"✓ Lecture material found: "
             f"{file_path}"
         )
 
@@ -3547,7 +3585,7 @@ async def run_assignment_preparation(
         )
 
         print(
-            f"\nâœ“ Assignment workflow prepared: "
+            f"\n✓ Assignment workflow prepared: "
             f"{wf['id']}"
         )
 
@@ -3730,7 +3768,7 @@ async def prepare_assignment_workflow(
 
             return assignment_workflow_public_state(wf)
 
-        print("\nâœ“ Assignment request parsed:")
+        print("\n✓ Assignment request parsed:")
 
         print(f"  Course: {parsed.get('course')}")
         print(f"  Week: {parsed.get('week')}")
@@ -4121,6 +4159,7 @@ async def clarify_combined_workflow(
 
     return combined_workflow_public_state(wf)
 
+
 # ============================================================
 # ASSIGNMENT WORKFLOW - PREPARATION WORKER
 # ============================================================
@@ -4185,7 +4224,7 @@ def prepare_assignment_workflow_sync(
         moodle.login(session.get('username'), session.get('password'))
 
         print(
-            f"âœ“ Logged into Moellim as "
+            f"✓ Logged into Moellim as "
             f"{session['username']}"
         )
 
@@ -4205,15 +4244,15 @@ def prepare_assignment_workflow_sync(
         )
 
         prepared = (
-    assignment_automation
-    .prepare_assignment_request(
-        page,
-        instruction,
-        selected_course=(
-            (wf.get("parsed") or {}).get("course")
-        ),
-    )
-)
+            assignment_automation
+            .prepare_assignment_request(
+                page,
+                instruction,
+                selected_course=(
+                    (wf.get("parsed") or {}).get("course")
+                ),
+            )
+        )
 
         # ====================================================
         # UPDATE STEPS
@@ -4244,11 +4283,11 @@ def prepare_assignment_workflow_sync(
         )
 
         print(
-            "\nâœ“ Assignment prepared."
+            "\n✓ Assignment prepared."
         )
 
         print(
-            "âœ“ Browser session will remain "
+            "✓ Browser session will remain "
             "open until approval."
         )
 
@@ -4324,7 +4363,6 @@ def prepare_assignment_workflow_sync(
         )
 
         raise
-
 
 
 def select_combined_course_lecture_file(
@@ -4516,32 +4554,31 @@ def prepare_combined_workflow_sync(
         update_step(wf, "material", "completed")
 
         # 5. Prepare the optional assignment draft.
-        
         assignment_draft = None
         assignment_auto = None
 
         if assignment_job:
-                assignment_auto = assignment_automation.AssignmentAutomation(page)
-                assignment_auto.open_course(str(course_id))
-                assignment_auto.verify_course(assignment_job["course"])
+            assignment_auto = assignment_automation.AssignmentAutomation(page)
+            assignment_auto.open_course(str(course_id))
+            assignment_auto.verify_course(assignment_job["course"])
 
-                # Normalize the requested assignment source.
-                # Combined assignment week always follows the lecture destination.
-                assignment_job["week"] = int(lecture_job["week"])
-                assignment_auto.find_week_section(assignment_job["week"])
+            # Normalize the requested assignment source.
+            # Combined assignment week always follows the lecture destination.
+            assignment_job["week"] = int(lecture_job["week"])
+            assignment_auto.find_week_section(assignment_job["week"])
 
-                # Use only the exact lecture file selected from this course's
-                # saved folder. Do not search old Moellim course materials.
-                lecture_text = combined_automation.local_lecture_text(file_path)
-                source_label = f"{file_path.name} (the lecture being uploaded)"
+            # Use only the exact lecture file selected from this course's
+            # saved folder. Do not search old Moellim course materials.
+            lecture_text = combined_automation.local_lecture_text(file_path)
+            source_label = f"{file_path.name} (the lecture being uploaded)"
 
-                assignment_draft = combined_automation.build_assignment_draft(
-                    assignment_job,
-                    lecture_text,
-                    source_label,
-                    course["name"],
-                )
-                update_step(wf, "generate", "completed")
+            assignment_draft = combined_automation.build_assignment_draft(
+                assignment_job,
+                lecture_text,
+                source_label,
+                course["name"],
+            )
+            update_step(wf, "generate", "completed")
 
         # 6. Return drafts for teacher approval.
         # Nothing is uploaded or created during preparation.
@@ -4574,6 +4611,8 @@ def prepare_combined_workflow_sync(
         wf["automation"] = None
 
         raise
+
+
 # ============================================================
 # LECTURE WORKFLOW - GET
 # ============================================================
@@ -4832,7 +4871,7 @@ async def approve_workflow(
     )
 
     print(
-        f"\nâœ“ Workflow approved: "
+        f"\n✓ Workflow approved: "
         f"{workflow_id}"
     )
 
@@ -4910,7 +4949,7 @@ async def approve_assignment_workflow(
     )
 
     print(
-        f"\nâœ“ Assignment workflow approved: "
+        f"\n✓ Assignment workflow approved: "
         f"{workflow_id}"
     )
 
@@ -4987,7 +5026,7 @@ async def reject_workflow(
     )
 
     print(
-        f"\nâœ— Workflow rejected: "
+        f"\n✗ Workflow rejected: "
         f"{workflow_id}"
     )
 
@@ -5054,7 +5093,7 @@ async def reject_assignment_workflow(
     )
 
     print(
-        f"\nâœ— Assignment workflow rejected: "
+        f"\n✗ Assignment workflow rejected: "
         f"{workflow_id}"
     )
 
@@ -5186,7 +5225,7 @@ async def execute_workflow(
         )
 
         print(
-            "\nâœ“ WORKFLOW COMPLETED SUCCESSFULLY"
+            "\n✓ WORKFLOW COMPLETED SUCCESSFULLY"
         )
 
         return workflow_public_state(
@@ -5218,7 +5257,7 @@ async def execute_workflow(
         )
 
         print(
-            f"\nâœ— WORKFLOW FAILED: {exc}"
+            f"\n✗ WORKFLOW FAILED: {exc}"
         )
 
         raise HTTPException(
@@ -5397,7 +5436,7 @@ async def execute_assignment_workflow(
         )
 
         print(
-            "\nâœ“ ASSIGNMENT WORKFLOW COMPLETED"
+            "\n✓ ASSIGNMENT WORKFLOW COMPLETED"
         )
 
         return assignment_workflow_public_state(
@@ -5429,7 +5468,7 @@ async def execute_assignment_workflow(
         )
 
         print(
-            f"\nâœ— ASSIGNMENT WORKFLOW FAILED: "
+            f"\n✗ ASSIGNMENT WORKFLOW FAILED: "
             f"{exc}"
         )
 
@@ -5552,7 +5591,7 @@ def execute_moellim_workflow_sync(
         moodle.login(session.get('username'), session.get('password'))
 
         print(
-            "âœ“ Logged in successfully as "
+            "✓ Logged in successfully as "
             f"{session['username']}."
         )
 
@@ -5574,7 +5613,7 @@ def execute_moellim_workflow_sync(
             )
 
         print(
-            "âœ“ Course found: "
+            "✓ Course found: "
             f"{course.get('name')}"
         )
 
@@ -5588,7 +5627,7 @@ def execute_moellim_workflow_sync(
         )
 
         print(
-            "âœ“ Course opened."
+            "✓ Course opened."
         )
 
         print(
@@ -5599,7 +5638,7 @@ def execute_moellim_workflow_sync(
         moodle.ensure_edit_mode()
 
         print(
-            "âœ“ Edit mode ready."
+            "✓ Edit mode ready."
         )
 
         print(
@@ -5628,7 +5667,7 @@ def execute_moellim_workflow_sync(
             )
 
         print(
-            "\nâœ“ Upload operation completed."
+            "\n✓ Upload operation completed."
         )
 
         print(
@@ -5738,6 +5777,7 @@ async def list_assignment_workflows(
             "session_token"
         ) == session_token
     ]
+
 
 # ============================================================
 # COMBINED WORKFLOW - LIST
@@ -6037,6 +6077,7 @@ async def execute_combined_workflow(
 # ============================================================
 # PERSISTENT AUDIT LOG + GOOGLE DRIVE CONNECTION
 # ============================================================
+
 @app.get("/api/activity-logs")
 async def get_activity_logs(authorization: Optional[str] = Header(None), limit: int = 200):
     session = get_teacher_session(authorization)
@@ -6100,6 +6141,7 @@ def file_assignment_public_state(wf: dict[str, Any]) -> dict[str, Any]:
         "id": wf["id"],
         "workflow_type": "file_assignment",
         "status": wf["status"],
+        "progress_message": wf.get("progress_message"),
         "request": wf.get("request"),
         "course": wf.get("course"),
         "candidates": [],
@@ -6137,7 +6179,6 @@ def verify_file_assignment_owner(
         raise HTTPException(status_code=403, detail="You do not have access to this workflow.")
 
     return get_teacher_session(authorization)
-
 
 
 def _infer_assignment_destination_week(session: dict, course_name: str, start_date: str):
@@ -6341,9 +6382,9 @@ async def prepare_file_assignment_workflow(
         "course": course,
         "folder_path": str(Path(folder).resolve()),
         "request": {
-        "course": course,
-        "instruction": instruction,
-        "file_name": request.file_name,
+            "course": course,
+            "instruction": instruction,
+            "file_name": request.file_name,
         },
         "candidates": candidates,
         "draft": None,
@@ -6465,16 +6506,13 @@ async def confirm_file_assignment_metadata(
 
     return file_assignment_public_state(wf)
 
-from pathlib import Path
-from datetime import datetime
-import re
-
 
 def _execute_file_assignment_sync(wf, session):
     p = browser = context = page = None
     resources = {}
 
     try:
+        wf["progress_message"] = "Logging into Moellim..."
         p = sync_playwright().start()
         browser, context = automation.launch_browser(p)
         page = context.new_page()
@@ -6483,6 +6521,7 @@ def _execute_file_assignment_sync(wf, session):
         moodle = automation.MoodleAutomation(page)
         moodle.login(session.get("username"), session.get("password"))
 
+        wf["progress_message"] = f"Opening course {wf['course']}..."
         course_info = moodle.discover_course(wf["course"])
         if not isinstance(course_info, dict) or not course_info.get("href"):
             raise RuntimeError("Could not rediscover the selected Moellim course.")
@@ -6508,6 +6547,7 @@ def _execute_file_assignment_sync(wf, session):
         assignment_auto.verify_course(wf["course"])
 
         week = int(draft["week_number"])
+        wf["progress_message"] = f"Locating Week {week} on Moellim..."
         section, info = assignment_auto.find_week_section(week)
         if not section or not info:
             raise RuntimeError(f"Week {week} could not be verified in Moellim.")
@@ -6517,10 +6557,9 @@ def _execute_file_assignment_sync(wf, session):
         draft["course"] = wf["course"]
         before = assignment_auto.snapshot_before(draft)
 
+        wf["progress_message"] = "Filling assignment details and uploading file..."
         assignment_auto.open_assignment_form(assignment_auto.section_num)
 
-        # Build a concise LMS description from extracted assignment metadata.
-        # Never send the full extracted document text to the LMS description.
         title = str(draft.get("title") or draft.get("file_name") or "Assignment").strip()
         marks_value = draft.get("total_marks")
         clos_value = draft.get("clos") or []
@@ -6537,7 +6576,6 @@ def _execute_file_assignment_sync(wf, session):
             f"Mapped CLO: {clos_text if clos_text else 'Not specified'}"
         )
 
-        # Validate file-assignment marks before interacting with Moellim.
         marks = normalize_assignment_marks(draft.get("total_marks"))
         if marks is not None:
             draft["max_grade"] = marks
@@ -6572,6 +6610,8 @@ def _execute_file_assignment_sync(wf, session):
         if start_date:
             assignment_auto.set_date("allowsubmissionsfromdate", start_date)
         assignment_auto.verify_attachment(file_path)
+
+        wf["progress_message"] = "Saving and verifying assignment on Moellim..."
         assignment_auto.save_assignment()
         assignment_auto.verify_saved(draft, before)
 
@@ -6621,18 +6661,27 @@ async def execute_file_assignment_workflow(
         raise HTTPException(status_code=409, detail="Approve this assignment before execution.")
 
     wf["status"] = "running"
+    wf["progress_message"] = "Starting Moellim upload..."
 
     try:
         result = await asyncio.to_thread(
             _execute_file_assignment_sync, wf, session
         )
         wf["result"] = result
+        wf["progress_message"] = "Completed"
         wf["status"] = "completed"
         return file_assignment_public_state(wf)
+
+    except RuntimeError as exc:
+        wf["status"] = "failed"
+        wf["progress_message"] = None
+        wf["error"] = str(exc)
+        raise HTTPException(status_code=400, detail=str(exc))
 
     except Exception as exc:
         traceback.print_exc()
         wf["status"] = "failed"
+        wf["progress_message"] = None
         wf["error"] = str(exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -6654,4 +6703,3 @@ async def reject_file_assignment_workflow(
     wf["status"] = "rejected"
     wf["error"] = "Rejected by teacher."
     return file_assignment_public_state(wf)
-

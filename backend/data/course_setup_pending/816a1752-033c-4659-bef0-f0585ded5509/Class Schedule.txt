@@ -1,0 +1,5 @@
+Class Schedule
+Monday: 09:00 - 10:30
+Wednesday: 11:00 - 12:30
+
+Days not listed are off days.

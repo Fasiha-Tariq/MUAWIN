@@ -1,0 +1,265 @@
+{
+ "intro_marketing": {
+  "keywords": [
+   "marketing",
+   "cs7-1",
+   "ss1"
+  ],
+  "title": "CS7-1 Introduction to Marketing",
+  "clos": {
+   "CLO1": {
+    "text": "Basic approaches to strategy formulation in tech environments.",
+    "bloom": "Remember / Understand",
+    "assessment": "Quizzes, Midterm Exam"
+   },
+   "CLO3": {
+    "text": "Key stages of market planning for tech/software products.",
+    "bloom": "Apply",
+    "assessment": "Assignments, Project, Final Exam"
+   },
+   "CLO2": {
+    "text": "Market-driven enterprise analysis & market differentiation.",
+    "bloom": "Analyze",
+    "assessment": "Midterm, Final Exam, Quizzes"
+   }
+  },
+  "weeks": {
+   "1": {
+    "topic": "Marketing in a Changing World & Core Marketing Concepts (Tech products, platforms, digital services)",
+    "raw_clo": "CLO1",
+    "clos": [
+     "CLO1"
+    ],
+    "lines": [
+     "Marketing in a Changing World & Core Marketing Concepts (Tech products, platforms, digital services)",
+     "Understanding Marketing: Definition, scope, and evolution of marketing in modern technology ecosystems.",
+     "Core Concepts: Needs, wants, demands, exchanges, transactions, and relationships.",
+     "Value Creation: Delivering customer value through digital solutions and software platforms",
+     "Marketing Management Orientations: Production, Product, Selling, Marketing, and Societal Marketing Concepts.",
+     "The 4 Ps introduced as the backbone for every later topic"
+    ]
+   },
+   "2": {
+    "topic": "Creating Customer Value and Satisfaction in Tech Products & Digital Services",
+    "raw_clo": "CLO1",
+    "clos": [
+     "CLO1"
+    ],
+    "lines": [
+     "Creating Customer Value and Satisfaction in Tech Products & Digital Services",
+     "Traditional vs. digital marketing, current ad-spend/growth data (sets up the digital block)",
+     "The 4 principles of digital marketing: attract, engage, convert, sustain"
+    ]
+   },
+   "3": {
+    "topic": "Customer Value Framework: Perceived customer value vs. acquisition cost.",
+    "raw_clo": "CLO1",
+    "clos": [
+     "CLO1"
+    ],
+    "lines": [
+     "Customer Value Framework: Perceived customer value vs. acquisition cost.",
+     "Customer Satisfaction & Retention: Metrics for measuring satisfaction, zero-friction UX, and churn rate management.",
+     "Customer Equity & Lifetime Value: Calculating Customer Lifetime Value (CLV) and managing long-term customer equity.",
+     "Engagement Strategies: Digital touchpoints, user onboarding, and continuous customer relationship building"
+    ]
+   },
+   "4": {
+    "topic": "Strategic Planning and the Marketing Process in Technology Companies & IT Startups",
+    "raw_clo": "CLO3",
+    "clos": [
+     "CLO3"
+    ],
+    "lines": [
+     "Strategic Planning and the Marketing Process in Technology Companies & IT Startups",
+     "Strategic Planning Process: Defining corporate mission, setting objectives, and business portfolio design",
+     "Portfolio Analysis Models: Boston Consulting Group (BCG) Matrix and GE/McKinsey Matrix",
+     "Marketing Strategy & Mix: Formulating the 4 Ps (Product, Price, Place, Promotion) for tech enterprises.",
+     "The Marketing Plan: Key sections, executable roadmap design, and budgeting",
+     "Structure of a marketing plan (feeds the term project)",
+     "Product Levels & Classifications: Core customer value, actual product, augmented product; consumer vs. industrial goods.",
+     "Services Marketing: Intangibility, inseparability, variability, perishability (Service-Profit Chain).",
+     "Branding Strategy: Brand equity, brand name selection, brand extensions, and co-branding.",
+     "Product Line & Mix Decisions: Width, length, depth, and consistency of product offerings."
+    ]
+   },
+   "5": {
+    "topic": "Analyzing the Micro and Macro Marketing Environment in the Tech Industry",
+    "raw_clo": "CLO1",
+    "clos": [
+     "CLO1"
+    ],
+    "lines": [
+     "Analyzing the Micro and Macro Marketing Environment in the Tech Industry",
+     "Microenvironment Analysis: Key actors—suppliers, marketing intermediaries, competitors, publics, and customers",
+     "Tech Regulatory & Ethics: Data privacy laws (GDPR, CCPA), intellectual property rights, and compliance for tech products."
+    ]
+   },
+   "6": {
+    "topic": "Marketing Research, Information Systems (MIS), and Introduction to Web Analytics",
+    "raw_clo": "CLO2",
+    "clos": [
+     "CLO2"
+    ],
+    "lines": [
+     "Marketing Research, Information Systems (MIS), and Introduction to Web Analytics",
+     "Marketing Information Systems (MIS): Internal databases, competitive intelligence, and marketing research systems",
+     "Marketing Research Process: Defining problems, research design, data collection, and analysis",
+     "Quantitative & Qualitative Methods: Surveys, focus groups, A/B testing, and telemetry data collection",
+     "First look at Google Analytics (sets up Week 13)",
+     "Data Ethics: User consent, data anonymization, and ethical analytics usage."
+    ]
+   },
+   "7": {
+    "topic": "Consumer Markets and Consumer Buyer Behavior (Consumer software, mobile apps, hardware)",
+    "raw_clo": "CLO2",
+    "clos": [
+     "CLO2"
+    ],
+    "lines": [
+     "Consumer Markets and Consumer Buyer Behavior (Consumer software, mobile apps, hardware)",
+     "Influencing Factors: Cultural, social, personal, and psychological drivers of consumer decisions.",
+     "Buyer Decision Process: Problem recognition, information search, evaluation of alternatives, purchase decision, post-purchase behavior.",
+     "Technology Adoption Life Cycle: Innovators, early adopters, early majority, late majority, and laggards. Crossing the Chasm preview"
+    ]
+   },
+   "8": {
+    "topic": "Business Markets (B2B IT Solutions, Enterprise Software) and Business Buyer Behavior",
+    "raw_clo": "CLO2",
+    "clos": [
+     "CLO2"
+    ],
+    "lines": [
+     "Business Markets (B2B IT Solutions, Enterprise Software) and Business Buyer Behavior",
+     "B2B vs. B2C Dynamics: Characteristics, market structures, and demand types (derived, inelastic, fluctuating).",
+     "The Enterprise Buying Center: Roles in procurement (Users, Influencers, Buyers, Deciders, Gatekeepers). RFPs",
+     "B2B Buying Process: Problem recognition through vendor performance review in enterprise software/IT.",
+     "Institutional & Government Markets: Public sector procurement, RFPs (Request for Proposals), and bidding systems."
+    ]
+   },
+   "9": {
+    "topic": "Market Segmentation, Targeting, and Positioning (STP) for Software & Tech Products",
+    "raw_clo": "CLO2",
+    "clos": [
+     "CLO2"
+    ],
+    "lines": [
+     "Market Segmentation, Targeting, and Positioning (STP) for Software & Tech Products",
+     "Market Segmentation: Geographic, demographic, psychographic, behavioral, and technographic bases.",
+     "Target Market Selection: Undifferentiated, differentiated, concentrated (niche), and micromarketing.",
+     "Differentiation & Value Proposition: Identifying competitive advantages and crafting core value statements.",
+     "Positioning Strategy: Perceptual mapping, positioning statements, and brand re-positioning."
+    ]
+   },
+   "10": {
+    "topic": "Midterm Examination",
+    "raw_clo": "CLO1, CLO2",
+    "clos": [
+     "CLO1",
+     "CLO2"
+    ],
+    "lines": [
+     "Midterm Examination"
+    ]
+   },
+   "11": {
+    "topic": "Digital Marketing Deep-Dive I — Channels & Content",
+    "raw_clo": "CLO 4, CLO 3",
+    "clos": [
+     "CLO4",
+     "CLO3"
+    ],
+    "lines": [
+     "Digital Marketing Deep-Dive I — Channels & Content",
+     "SEO, content marketing, email, affiliate, influencer marketing",
+     "Social media marketing (SMM) fundamentals",
+     "Shopify (making website, purchasing domain, adding products)",
+     "Assignment: audit a real tech brand's channel mix",
+     "New Product Development (NPD) Process: Idea generation, screening, concept testing, marketing strategy, business analysis, development, test marketing, commercialization.",
+     "Agile & Lean Approaches: Minimum Viable Product (MVP) development, feedback loops, and rapid iteration.",
+     "Product Life-Cycle (PLC) Stages: Introduction, growth, maturity, decline—strategies at each stage.",
+     "Crossing the Chasm: Bridging the gap between visionaries (early adopters) and pragmatists (early majority)."
+    ]
+   },
+   "12": {
+    "topic": "Digital Marketing Deep-Dive II — Platforms & Setup",
+    "raw_clo": "CLO 4",
+    "clos": [
+     "CLO4"
+    ],
+    "lines": [
+     "Digital Marketing Deep-Dive II — Platforms & Setup",
+     "Instagram, LinkedIn, X/Twitter, Facebook as marketing tools",
+     "Students create a business/company page as a graded task",
+     "Prep for the ad-platform lab in Week 12",
+     "Distribution Channels & Digital Logistics: App Stores, API Marketplaces, and Cloud Distribution",
+     "Marketing Channel Structure: Direct vs. indirect distribution channels; channel levels.",
+     "Digital & Cloud Distribution: App stores, API marketplaces, SaaS web portals, and continuous deployment networks.",
+     "Channel Management & Conflict: Vertical vs. horizontal marketing systems; multi-channel conflict management.",
+     "Supply Chain & Digital Logistics: Order processing, inventory management, CDN distribution, and infrastructure management."
+    ]
+   },
+   "13": {
+    "topic": "Digital Advertising Platform (Google Ads + Meta Ads Manager)",
+    "raw_clo": "CLO 4",
+    "clos": [
+     "CLO4"
+    ],
+    "lines": [
+     "Digital Advertising Platform (Google Ads + Meta Ads Manager)",
+     "Campaign structure, audience targeting, budgets, bidding",
+     "Each student/team builds a live-style campaign in a sandbox/demo account",
+     "This is the required teaching-tool component for placing digital ads"
+    ]
+   },
+   "14": {
+    "topic": "Web & Ad Analytics — Measuring the Week-12 Campaign",
+    "raw_clo": "CLO 4, CLO3",
+    "clos": [
+     "CLO4",
+     "CLO3"
+    ],
+    "lines": [
+     "Web & Ad Analytics — Measuring the Week-12 Campaign",
+     "Integrated Marketing Communication (IMC) Strategy: Digital Ads, DevRel (Developer Relations), PR",
+     "The Promotion Mix: Integrating advertising, PR, personal selling, sales promotion, and direct marketing.",
+     "Communication Process: Sender, encoding, message, media, decoding, receiver, response, feedback, noise.",
+     "Steps in Developing Effective IMC: Identifying target audience, determining objectives, designing message, selecting channels, establishing budget.",
+     "Tech Community Marketing: Developer Relations (DevRel), open-source advocacy, technical documentation as a conversion tool.",
+     "CTR, CPC, CPA, ROAS, conversion tracking",
+     "Students pull performance data from their own Week-12 campaign",
+     "Google Analytics dashboard walkthrough"
+    ]
+   },
+   "15": {
+    "topic": "IMC, DevRel & Free Digital-Marketing Certification Sprint",
+    "raw_clo": "CLO 3",
+    "clos": [
+     "CLO3"
+    ],
+    "lines": [
+     "IMC, DevRel & Free Digital-Marketing Certification Sprint",
+     "Integrated marketing communication, growth hacking, DevRel",
+     "Direct & Online Marketing: Growth hacking tactics, lifecycle email marketing, search advertising (SEM/SEO), and retargeting.",
+     "In-class time to complete one approved free/low-cost certificate (see Materials)",
+     "Deliverable: certificate + 1-page reflection linking it to the Week-12 campaign",
+     "Lock-in, network effects, defensive moats",
+     "Marketing Plan / Term Project presentations"
+    ]
+   },
+   "16": {
+    "topic": "Final Exam",
+    "raw_clo": "CLO1, CLO2, CLO3, CLO 4",
+    "clos": [
+     "CLO1",
+     "CLO2",
+     "CLO3",
+     "CLO4"
+    ],
+    "lines": [
+     "Final Exam"
+    ]
+   }
+  }
+ }
+}

@@ -1,32 +1,23 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { 
-  Radio, 
-  Clock, 
-  Calendar, 
-  AlertCircle, 
-  ArrowRight, 
-  Square, 
-  Mic2, 
-  Sparkles, 
-  CheckCircle2, 
+import {
+  Clock,
+  ArrowRight,
+  Square,
   Volume2,
-  AlertTriangle,
-  Play
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 
 export const ClassModeStatusCard: React.FC = () => {
   const navigate = useNavigate();
-  const { 
-    activeScheduleClass, 
-    classModeStatus, 
-    simulatedTimeString,
+  const {
+    activeScheduleClass,
+    classModeStatus,
     stopClassModeManual,
     resumeClassModeManual,
     manualOverrideStopped,
     elapsedLectureSeconds,
-    activeClassContent
+    activeClassContent,
   } = useApp();
 
   const [showStopModal, setShowStopModal] = useState<boolean>(false);
@@ -44,155 +35,136 @@ export const ClassModeStatusCard: React.FC = () => {
 
   return (
     <>
-      {/* Primary Upcoming / Active Class Mode Card */}
-      <div className={`rounded-2xl p-4 sm:p-6 transition-all border shadow-sm relative overflow-hidden ${
-        classModeStatus === 'live'
-          ? 'bg-gradient-to-br from-rose-950 via-slate-900 to-indigo-950 text-white border-rose-600/60 ring-2 ring-rose-500/20'
-          : classModeStatus === 'upcoming_warning'
-          ? 'bg-gradient-to-br from-amber-950 via-slate-900 to-slate-950 text-white border-amber-500/60 ring-2 ring-amber-500/20'
-          : classModeStatus === 'ended'
-          ? 'bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 text-white border-slate-700'
-          : 'bg-white text-slate-900 border-slate-200'
-      }`}>
-        {/* Glow effect */}
-        <div className={`absolute -right-10 -bottom-10 w-44 h-44 rounded-full blur-3xl pointer-events-none opacity-20 ${
-          classModeStatus === 'live' ? 'bg-rose-500' : 'bg-amber-500'
-        }`} />
-
-        <div className="relative z-10 flex flex-col md:flex-row md:items-center md:justify-between gap-4 sm:gap-5 min-w-0">
-          <div className="space-y-2 min-w-0 flex-1">
-            {/* Header Tag / Operating Mode State */}
-            <div className="flex items-center gap-2 flex-wrap">
+      <div className="bg-gradient-to-r from-blue-50/70 via-slate-50/60 to-white rounded-2xl p-4 sm:p-5 border border-blue-200/80 shadow-xs transition-all">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 min-w-0">
+          {/* Left: Status, Course & Timing */}
+          <div className="space-y-1.5 min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap text-xs">
               {classModeStatus === 'live' ? (
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider bg-rose-500/20 text-rose-300 border border-rose-500/40 animate-pulse">
-                  <span className="w-2 h-2 rounded-full bg-rose-500"></span>
-                  <span>CLASS MODE — LIVE</span>
+                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-extrabold uppercase tracking-wider bg-rose-50 text-rose-700 border border-rose-200">
+                  <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
+                  <span>Live Session</span>
                 </span>
               ) : classModeStatus === 'upcoming_warning' ? (
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider bg-amber-500/20 text-amber-300 border border-amber-500/40">
-                  <Clock className="w-3.5 h-3.5 text-amber-400" />
-                  <span>UPCOMING CLASS</span>
+                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-extrabold uppercase tracking-wider bg-blue-100/80 text-blue-700 border border-blue-200">
+                  <span>Starts in 5 min</span>
                 </span>
               ) : classModeStatus === 'ended' ? (
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider bg-purple-500/20 text-purple-300 border border-purple-500/40">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-purple-400" />
-                  <span>CLASS SESSION ENDED</span>
+                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-extrabold uppercase tracking-wider bg-blue-100/80 text-blue-700 border border-blue-200">
+                  <span>Session Ended</span>
                 </span>
               ) : (
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider bg-blue-50 text-blue-700 border border-blue-200">
-                  <Calendar className="w-3.5 h-3.5 text-blue-600" />
-                  <span>NEXT SCHEDULED CLASS</span>
+                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-extrabold uppercase tracking-wider bg-blue-100/80 text-blue-700 border border-blue-200">
+                  <span>Next Scheduled Class</span>
                 </span>
               )}
 
-              <span className={`text-xs font-semibold ${classModeStatus === 'idle' ? 'text-slate-500' : 'text-slate-300'}`}>
-                {activeScheduleClass.room}
-              </span>
+              <span className="text-slate-400">•</span>
+              <span className="text-slate-500 font-medium">{activeScheduleClass.room}</span>
             </div>
 
-            {/* Course Title & Section */}
-            <div className="min-w-0">
-              <h3 className="text-lg sm:text-2xl font-black tracking-tight break-words">
-                {activeScheduleClass.courseCode} — {activeScheduleClass.courseTitle}
-              </h3>
-              <p className={`text-xs font-semibold mt-0.5 break-words ${classModeStatus === 'idle' ? 'text-slate-600' : 'text-slate-300'}`}>
-                Section: <span className="font-bold text-amber-300">{activeScheduleClass.section}</span> • Lecture {activeScheduleClass.lectureNumber}: <em>{activeScheduleClass.topic}</em>
-              </p>
-            </div>
+            <h3 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight break-words">
+              {activeScheduleClass.courseCode} — {activeScheduleClass.courseTitle}
+            </h3>
 
-            {/* Timing & Auto-Start Indicators */}
-            <div className="flex flex-wrap items-center gap-3 sm:gap-4 text-xs pt-1">
-              <div className="flex items-center gap-1.5 font-mono font-bold">
-                <Clock className="w-4 h-4 text-blue-400" />
-                <span>{activeScheduleClass.startTime} – {activeScheduleClass.endTime}</span>
-              </div>
+            <p className="text-xs text-slate-500 break-words">
+              {activeScheduleClass.section} • Lecture{' '}
+              {activeScheduleClass.lectureNumber}:{' '}
+              <span className="text-slate-700 font-medium">{activeScheduleClass.topic}</span>
+            </p>
 
-              {classModeStatus === 'live' ? (
-                <div className="flex items-center gap-1.5 text-rose-300 font-bold">
-                  <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
-                  <span>● Listening</span>
-                  <span className="font-mono text-white bg-black/40 px-2 py-0.5 rounded border border-white/10 ml-1">
-                    {formatTimer(elapsedLectureSeconds || 148)}
-                  </span>
-                </div>
-              ) : classModeStatus === 'upcoming_warning' ? (
-                <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
-                  <span className="inline-flex items-center gap-1.5 text-emerald-400 font-bold">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-                    <span>● Auto-start enabled</span>
-                  </span>
-                  <span className="px-2.5 py-0.5 rounded-md bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30">
-                    Starts in 5 minutes
-                  </span>
-                </div>
-              ) : classModeStatus === 'ended' ? (
-                <div className="flex items-center gap-1.5 text-purple-300 font-medium">
-                  <span>Concluded at {activeScheduleClass.endTime} • {activeClassContent.detectedActions.length} academic directives ready for approval</span>
-                </div>
-              ) : (
-                <span className="text-slate-500 font-medium">
-                  Auto-starts automatically according to your timetable
+            <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 pt-1">
+              <span className="inline-flex items-center gap-1.5 font-mono text-slate-700">
+                <Clock className="w-3.5 h-3.5 text-blue-600" />
+                <span>
+                  {activeScheduleClass.startTime} – {activeScheduleClass.endTime}
                 </span>
+              </span>
+
+              {classModeStatus === 'live' && (
+                <>
+                  <span>•</span>
+                  <span className="text-rose-700 font-semibold">
+                    Listening ({formatTimer(elapsedLectureSeconds || 148)})
+                  </span>
+                </>
+              )}
+
+              {classModeStatus === 'upcoming_warning' && (
+                <>
+                  <span>•</span>
+                  <span className="text-blue-700 font-semibold">
+                    Auto-start enabled
+                  </span>
+                </>
+              )}
+
+              {classModeStatus === 'ended' && (
+                <>
+                  <span>•</span>
+                  <span className="text-slate-600 font-medium">
+                    {activeClassContent.detectedActions.length} actions ready for
+                    approval
+                  </span>
+                </>
               )}
             </div>
           </div>
 
-          {/* Action Buttons */}
-          <div className="flex flex-wrap items-center gap-2 sm:gap-3 shrink-0 pt-2 sm:pt-0">
+          {/* Right: Actions */}
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
             {classModeStatus === 'live' ? (
               <>
                 <button
                   onClick={() => navigate('/lecture')}
-                  className="px-4 py-2.5 text-xs font-bold bg-rose-600 hover:bg-rose-500 text-white rounded-xl shadow-md transition-colors flex items-center gap-2 cursor-pointer"
+                  className="px-3.5 py-2 text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
                 >
-                  <Volume2 className="w-4 h-4 text-white animate-pulse" />
+                  <Volume2 className="w-3.5 h-3.5" />
                   <span>View Live Session</span>
                   <ArrowRight className="w-3.5 h-3.5" />
                 </button>
 
                 <button
                   onClick={() => setShowStopModal(true)}
-                  className="px-3.5 py-2.5 text-xs font-bold bg-white/10 hover:bg-rose-900/60 text-rose-200 border border-rose-500/30 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
+                  className="px-3.5 py-2 text-xs font-bold bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-xl shadow-2xs transition-colors flex items-center gap-1.5 cursor-pointer"
                 >
-                  <Square className="w-3.5 h-3.5 fill-rose-400 text-rose-400" />
-                  <span>Stop Class Mode</span>
+                  <Square className="w-3 h-3 fill-rose-500 text-rose-500" />
+                  <span>Stop</span>
                 </button>
               </>
             ) : classModeStatus === 'upcoming_warning' ? (
-              <>
-                <button
-                  onClick={() => navigate('/lecture')}
-                  className="px-5 py-2.5 text-xs font-bold bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-xl shadow-md transition-colors flex items-center gap-2 cursor-pointer"
-                >
-                  <Radio className="w-4 h-4 text-slate-950" />
-                  <span>Open Class Mode</span>
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </button>
-              </>
+              <button
+                onClick={() => navigate('/lecture')}
+                className="px-3.5 py-2 text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
+              >
+                <span>Open Class Mode</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
             ) : classModeStatus === 'ended' ? (
               <>
                 <button
                   onClick={() => navigate('/lecture')}
-                  className="px-4 py-2.5 text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer"
+                  className="px-3.5 py-2 text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
                 >
-                  <span>Review Extracted Tasks</span>
+                  <span>Review Tasks</span>
                   <ArrowRight className="w-3.5 h-3.5" />
                 </button>
+
                 {manualOverrideStopped && (
                   <button
                     onClick={resumeClassModeManual}
-                    className="px-3 py-2 text-xs font-semibold bg-white/10 hover:bg-white/20 text-slate-300 rounded-xl transition-colors"
+                    className="px-3.5 py-2 text-xs font-bold bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-xl shadow-2xs transition-colors cursor-pointer"
                   >
-                    Resume Capture
+                    Resume
                   </button>
                 )}
               </>
             ) : (
               <button
                 onClick={() => navigate('/lecture')}
-                className="px-4 py-2 text-xs font-bold bg-slate-900 hover:bg-slate-800 text-white rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer"
+                className="px-3.5 py-2 text-xs font-bold bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-xl shadow-2xs transition-colors flex items-center gap-1.5 cursor-pointer"
               >
-                <span>View Timetable Session</span>
+                <span>Open Class Mode</span>
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
             )}
@@ -200,38 +172,31 @@ export const ClassModeStatusCard: React.FC = () => {
         </div>
       </div>
 
-      {/* Manual Stop Confirmation Modal */}
+      {/* Stop Confirmation Modal */}
       {showStopModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 animate-in zoom-in-95 duration-150">
-            <div className="flex items-center gap-3 mb-4">
-              <span className="p-2.5 rounded-xl bg-amber-50 text-amber-700 border border-amber-200">
-                <AlertTriangle className="w-6 h-6 text-amber-600" />
-              </span>
-              <div>
-                <h4 className="text-base font-bold text-slate-900">
-                  Stop Class Mode?
-                </h4>
-                <p className="text-xs text-slate-500">
-                  Override active timetable lecture capture
-                </p>
-              </div>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-5 shadow-xl border border-slate-200 space-y-4">
+            <div>
+              <h4 className="text-sm font-bold text-slate-900">
+                Stop Class Mode?
+              </h4>
+              <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                This will end live transcription early for{' '}
+                {activeScheduleClass.courseCode} ({activeScheduleClass.section})
+                and save the lecture summary.
+              </p>
             </div>
 
-            <p className="text-xs text-slate-600 leading-relaxed mb-6">
-              Are you sure you want to stop Class Mode? This will conclude real-time transcription early for <strong>{activeScheduleClass.courseCode} ({activeScheduleClass.section})</strong> and synthesize the lecture summary.
-            </p>
-
-            <div className="flex items-center justify-end gap-3">
+            <div className="flex items-center justify-end gap-2">
               <button
                 onClick={() => setShowStopModal(false)}
-                className="px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-100 rounded-xl transition-colors"
+                className="px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
               >
-                Continue
+                Cancel
               </button>
               <button
                 onClick={handleConfirmStop}
-                className="px-4 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-xl shadow-xs transition-colors"
+                className="px-3.5 py-2 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded-xl transition-colors cursor-pointer"
               >
                 Stop
               </button>

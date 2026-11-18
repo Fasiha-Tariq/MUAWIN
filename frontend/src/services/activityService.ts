@@ -20,8 +20,23 @@ export const activityService = {
   async getActivityLogs(): Promise<ActivityLog[]> {
     if (!USE_MOCK_API) {
       try {
-        const response = await api.get<ActivityLog[]>('/activity-logs');
-        return response.data;
+        const [workflowResponse, featureResponse] = await Promise.all([
+          api.get<ActivityLog[]>('/activity-logs'),
+          api.get<{ events: any[] }>('/setup/events'),
+        ]);
+        const featureLogs: ActivityLog[] = (featureResponse.data.events || []).map((event: any) => ({
+          id: `feature-${event.id}`,
+          timestamp: event.created_at,
+          courseCode: event.course || '',
+          courseTitle: event.course || '',
+          action: String(event.event_type || 'Course setup').replaceAll('_', ' '),
+          workflowName: 'MUAWIN Course Management',
+          status: event.status === 'failed' ? 'Failed' : 'Completed',
+          operator: event.teacher,
+          details: typeof event.details === 'string' ? event.details : JSON.stringify(event.details || {}),
+        }));
+        return [...(workflowResponse.data || []), ...featureLogs]
+          .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
       } catch (err) {
         console.warn('Backend unavailable, falling back to mock activity logs', err);
       }

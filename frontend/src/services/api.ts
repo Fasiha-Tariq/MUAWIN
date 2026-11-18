@@ -106,8 +106,11 @@ async function request<T>(
    */
   const token = getAuthToken();
 
+  const isFormData =
+    typeof FormData !== 'undefined' && customConfig.body instanceof FormData;
+
   const headers: HeadersInit = {
-    'Content-Type': 'application/json',
+    ...(!isFormData ? { 'Content-Type': 'application/json' } : {}),
 
     ...(token
       ? {
@@ -217,6 +220,17 @@ export const api = {
         body !== undefined && body !== null
           ? JSON.stringify(body)
           : undefined,
+    }),
+
+  postForm: <T>(
+    endpoint: string,
+    body: FormData,
+    options?: RequestOptions
+  ) =>
+    request<T>(endpoint, {
+      ...options,
+      method: 'POST',
+      body,
     }),
 
   delete: <T>(

@@ -210,11 +210,11 @@ export const WorkflowPlanPreview: React.FC<WorkflowPlanPreviewProps> = ({
           </div>
         )}
 
-        {/* Human-in-the-loop Notice */}
+        {/* Teacher Approval Notice */}
         <div className="flex items-center gap-2 text-xs text-amber-800 bg-amber-50/80 px-3 py-2.5 rounded-xl border border-amber-200">
           <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
           <span>
-            <strong>Human Approval Mandate:</strong> MUAWIN will not execute actions on Moellim without explicit teacher authorization.
+            <strong>Teacher Approval Required:</strong> MUAWIN will not execute actions on Moellim without explicit teacher authorization.
           </span>
         </div>
 

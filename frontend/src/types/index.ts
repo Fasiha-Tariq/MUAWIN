@@ -27,17 +27,19 @@ export interface Course {
   color: string;
 }
 
-export type WorkflowStatus = 
-  | 'idle' 
-  | 'understanding' 
-  | 'planned' 
-  | 'waiting_approval' 
-  | 'approved' 
-  | 'executing' 
-  | 'verifying' 
-  | 'completed' 
-  | 'failed' 
-  | 'rejected';
+export type WorkflowStatus =
+  | 'idle'
+  | 'understanding'
+  | 'planned'
+  | 'needs_clarification'
+  | 'waiting_approval'
+  | 'approved'
+  | 'executing'
+  | 'verifying'
+  | 'completed'
+  | 'failed'
+  | 'rejected'
+  | 'running';
 
 export type ActionType = 
   | 'Create Assignment' 
@@ -98,7 +100,7 @@ export interface WorkflowItem {
   id: string;
   title: string;
   actionType: ActionType;
-  workflowType?: 'lecture' | 'assignment';
+  workflowType?: 'lecture' | 'assignment' | 'combined';
 
   courseId: string;
 
@@ -129,6 +131,7 @@ export interface WorkflowItem {
     source: string;
     action: string;
     confidence: number;
+    rawInstruction?: string;
   };
 
   payload?: WorkflowPayload;

@@ -1,18 +1,12 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
-  Workflow, 
   Search, 
-  Filter, 
   CheckCircle2, 
   Clock, 
-  AlertCircle, 
   XCircle, 
   ArrowRight,
-  BookOpen,
   Eye,
-  Check,
-  Calendar,
   X
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
@@ -20,7 +14,7 @@ import { WorkflowItem } from '../types';
 
 export const Workflows: React.FC = () => {
   const navigate = useNavigate();
-  const { user, courses, workflows } = useApp();
+  const { courses, workflows } = useApp();
 
   const [selectedCourseFilter, setSelectedCourseFilter] = useState<string>('all');
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<string>('all');
@@ -31,16 +25,10 @@ export const Workflows: React.FC = () => {
   const teacherCourseIds = new Set(courses.map((c) => c.id));
 
   const filteredWorkflows = workflows.filter((wf) => {
-    // 1. Teacher-specific course isolation
     if (!teacherCourseIds.has(wf.courseId)) return false;
-
-    // 2. Course filter
     if (selectedCourseFilter !== 'all' && wf.courseId !== selectedCourseFilter) return false;
-
-    // 3. Status filter
     if (selectedStatusFilter !== 'all' && wf.status !== selectedStatusFilter) return false;
 
-    // 4. Search query
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       const matchTitle = wf.title.toLowerCase().includes(q);
@@ -71,7 +59,7 @@ export const Workflows: React.FC = () => {
       case 'executing':
         return (
           <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 flex items-center gap-1 animate-pulse">
-            <span className="w-1.5 h-1.5 rounded-full bg-blue-600"></span>
+            <span className="w-1.5 h-1.5 rounded-full bg-blue-600" />
             <span>Executing on Moellim</span>
           </span>
         );
@@ -92,35 +80,10 @@ export const Workflows: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6 max-w-5xl mx-auto animate-in fade-in duration-200">
-      {/* Page Header */}
-      <div className="border-b border-slate-200/80 pb-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <div>
-          <div className="flex items-center gap-2 mb-1">
-            <span className="text-[11px] font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-100 uppercase tracking-wider flex items-center gap-1">
-              <Workflow className="w-3 h-3 text-blue-600" />
-              <span>Moellim Automation Pipelines</span>
-            </span>
-            <span className="text-xs text-slate-400">•</span>
-            <span className="text-xs text-slate-500">Instructor Audit Trail</span>
-          </div>
-          <h2 className="text-2xl font-extrabold text-slate-900 tracking-tight">Workflow Management</h2>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Full lifecycle tracking of all intent-to-action pipelines across your {courses.length} assigned sections.
-          </p>
-        </div>
-
-        <button
-          onClick={() => navigate('/assistant')}
-          className="text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 px-3.5 py-2 rounded-xl shadow-xs transition-colors self-start sm:self-auto"
-        >
-          + New Workflow Intent
-        </button>
-      </div>
-
+    <div className="space-y-4 max-w-5xl mx-auto animate-in fade-in duration-200">
       {/* Filter and Search Bar */}
-      <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-xs space-y-3">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+      <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-xs">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
           {/* Search box */}
           <div className="relative flex-1">
             <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -133,49 +96,51 @@ export const Workflows: React.FC = () => {
             />
           </div>
 
-          {/* Status Filter */}
-          <div className="flex items-center gap-2 shrink-0">
-            <span className="text-xs font-bold text-slate-600">Status:</span>
-            <select
-              value={selectedStatusFilter}
-              onChange={(e) => setSelectedStatusFilter(e.target.value)}
-              className="text-xs bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-medium text-slate-700 focus:outline-blue-600"
-            >
-              <option value="all">All Statuses</option>
-              <option value="waiting_approval">Waiting Approval</option>
-              <option value="completed">Completed & Synced</option>
-              <option value="rejected">Rejected</option>
-            </select>
+          {/* Dropdown Filters */}
+          <div className="flex flex-wrap items-center gap-3 shrink-0">
+            {/* Section / Course Dropdown */}
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold text-slate-600">Section:</span>
+              <select
+                value={selectedCourseFilter}
+                onChange={(e) => setSelectedCourseFilter(e.target.value)}
+                className="text-xs bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-medium text-slate-700 focus:outline-blue-600 max-w-[230px] cursor-pointer"
+              >
+                <option value="all">All My Courses ({courses.length})</option>
+                {courses.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.code}{c.section ? ` (${c.section})` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Status Dropdown */}
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold text-slate-600">Status:</span>
+              <select
+                value={selectedStatusFilter}
+                onChange={(e) => setSelectedStatusFilter(e.target.value)}
+                className="text-xs bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-medium text-slate-700 focus:outline-blue-600 cursor-pointer"
+              >
+                <option value="all">All Statuses</option>
+                <option value="waiting_approval">Waiting Approval</option>
+                <option value="completed">Completed & Synced</option>
+                <option value="rejected">Rejected</option>
+              </select>
+            </div>
           </div>
         </div>
+      </div>
 
-        {/* Assigned Course Filter Chips */}
-        <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center gap-1.5">
-          <span className="text-xs font-semibold text-slate-400 mr-1">Section:</span>
-          <button
-            onClick={() => setSelectedCourseFilter('all')}
-            className={`text-xs px-2.5 py-1 rounded-lg font-bold transition-all ${
-              selectedCourseFilter === 'all'
-                ? 'bg-blue-600 text-white'
-                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-            }`}
-          >
-            All My Courses ({courses.length})
-          </button>
-          {courses.map((c) => (
-            <button
-              key={c.id}
-              onClick={() => setSelectedCourseFilter(c.id)}
-              className={`text-xs px-2.5 py-1 rounded-lg font-bold transition-all ${
-                selectedCourseFilter === c.id
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-              }`}
-            >
-              {c.code} ({c.section})
-            </button>
-          ))}
-        </div>
+      {/* Action Button below search bar */}
+      <div className="flex justify-end">
+        <button
+          onClick={() => navigate('/assistant')}
+          className="text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 px-3.5 py-2 rounded-xl shadow-xs transition-colors cursor-pointer"
+        >
+          + New Workflow Intent
+        </button>
       </div>
 
       {/* Workflow Cards */}
@@ -213,7 +178,7 @@ export const Workflows: React.FC = () => {
               <div className="flex items-center gap-2 shrink-0 self-end sm:self-auto">
                 <button
                   onClick={() => setInspectWorkflow(wf)}
-                  className="px-3 py-1.5 text-xs font-semibold text-slate-700 hover:text-blue-700 hover:bg-slate-100 border border-slate-200 rounded-xl transition-colors flex items-center gap-1"
+                  className="px-3 py-1.5 text-xs font-semibold text-slate-700 hover:text-blue-700 hover:bg-slate-100 border border-slate-200 rounded-xl transition-colors flex items-center gap-1 cursor-pointer"
                 >
                   <Eye className="w-3.5 h-3.5" />
                   <span>Inspect Steps</span>
@@ -222,7 +187,7 @@ export const Workflows: React.FC = () => {
                 {wf.status === 'waiting_approval' && (
                   <button
                     onClick={() => navigate('/approvals')}
-                    className="px-3.5 py-1.5 text-xs font-bold text-white bg-amber-600 hover:bg-amber-700 rounded-xl shadow-xs transition-colors flex items-center gap-1"
+                    className="px-3.5 py-1.5 text-xs font-bold text-white bg-amber-600 hover:bg-amber-700 rounded-xl shadow-xs transition-colors flex items-center gap-1 cursor-pointer"
                   >
                     <span>Authorize</span>
                     <ArrowRight className="w-3.5 h-3.5" />
@@ -250,7 +215,7 @@ export const Workflows: React.FC = () => {
               </div>
               <button
                 onClick={() => setInspectWorkflow(null)}
-                className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-200 transition-colors shrink-0"
+                className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-200 transition-colors shrink-0 cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -312,7 +277,7 @@ export const Workflows: React.FC = () => {
             <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-end shrink-0">
               <button
                 onClick={() => setInspectWorkflow(null)}
-                className="px-4 py-2 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded-xl hover:bg-slate-100 transition-colors"
+                className="px-4 py-2 text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded-xl hover:bg-slate-100 transition-colors cursor-pointer"
               >
                 Close
               </button>
