@@ -1,0 +1,54 @@
+{
+  "status": "success",
+  "course": "CS7 MUAWIN (Female)",
+  "course_id": "6381",
+  "week": "Week 2",
+  "moodle_section": {
+    "num": 2,
+    "heading": "23 August - 29 August",
+    "method": "Moodle section number 2 (course headings carry no 'Week N' label)"
+  },
+  "lecture_source": "Lecture 2 (found in section-2)",
+  "title": "CS7 Week 2 Assignment 2",
+  "pdf_file": "C:\\Users\\HP\\Desktop\\FASI\\FYP - MUAWIN\\MUAWIN\\backend\\data\\assignment_pdfs\\CS7_Week_2_Assignment_2.pdf",
+  "max_grade": 10,
+  "duedate": "2026-10-15T23:59:00",
+  "question_types": {
+    "short": 3,
+    "long": 2
+  },
+  "question_count": 5,
+  "questions": [
+    {
+      "number": 1,
+      "question_type": "short",
+      "question": "Define Unit Economics and briefly explain its significance.",
+      "marks": 2
+    },
+    {
+      "number": 2,
+      "question_type": "short",
+      "question": "Define Zero-Friction UX and briefly explain its significance.",
+      "marks": 2
+    },
+    {
+      "number": 3,
+      "question_type": "short",
+      "question": "Define \"Aha!\" Moment and briefly explain its significance.",
+      "marks": 2
+    },
+    {
+      "number": 4,
+      "question_type": "long",
+      "question": "Explain Acquisition Cost in detail. Discuss its working, key characteristics and importance with a suitable example.",
+      "marks": 2
+    },
+    {
+      "number": 5,
+      "question_type": "long",
+      "question": "Explain Acquisition Costs in detail. Discuss its working, key characteristics and importance with a suitable example.",
+      "marks": 2
+    }
+  ],
+  "message": "Assignment created successfully. Questions were attached as a PDF and the assignment was verified in the requested week."
+}
