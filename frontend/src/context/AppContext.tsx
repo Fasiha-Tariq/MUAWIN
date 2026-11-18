@@ -1,4 +1,4 @@
-import React, {
+﻿import React, {
   createContext,
   useContext,
   useState,
@@ -29,6 +29,7 @@ import {
 } from '../services/scheduleService';
 
 import { workflowService } from '../services/workflowService';
+import { fileAssignmentService } from '../services/fileAssignmentService';
 import { api } from '../services/api';
 
 /*
@@ -60,6 +61,81 @@ const getTeacherStorageKey = (
   return `${baseKey}_${username.trim()}`;
 };
 
+const buildWorkflowApprovalData = (
+  workflow: WorkflowItem
+): Record<string, any> => {
+  const payload = (workflow.payload || {}) as Record<string, any>;
+
+  const combinedDraft = payload.combinedDraft || {};
+  const backendDraft = payload.backendDraft || {};
+
+  const assignmentDraft =
+    combinedDraft.assignment ||
+    payload.assignmentDraft ||
+    backendDraft.assignment ||
+    (
+      String(workflow.id).startsWith('awf-')
+        ? backendDraft
+        : {}
+    );
+
+  const approvalData: Record<string, any> = {};
+
+  const heading =
+    payload.heading ||
+    payload.lectureDraft?.heading ||
+    backendDraft.heading;
+
+  const description =
+    payload.description ||
+    payload.lectureDraft?.description ||
+    backendDraft.description;
+
+  const keyPoints =
+    payload.key_points ||
+    payload.lectureDraft?.key_points ||
+    backendDraft.key_points;
+
+  const assignmentTitle =
+    payload.assignment_title ||
+    payload.assignmentTitle ||
+    assignmentDraft.title ||
+    assignmentDraft.assignment_title;
+
+  const assignmentDescription =
+    payload.assignment_description ||
+    payload.assignmentDescription ||
+    assignmentDraft.description ||
+    assignmentDraft.assignment_description;
+
+  if (typeof heading === 'string' && heading.trim()) {
+    approvalData.heading = heading;
+  }
+
+  if (typeof description === 'string' && description.trim()) {
+    approvalData.description = description;
+  }
+
+  if (Array.isArray(keyPoints)) {
+    approvalData.key_points = keyPoints;
+  }
+
+  if (
+    typeof assignmentTitle === 'string' &&
+    assignmentTitle.trim()
+  ) {
+    approvalData.assignment_title = assignmentTitle;
+  }
+
+  if (
+    typeof assignmentDescription === 'string' &&
+    assignmentDescription.trim()
+  ) {
+    approvalData.assignment_description = assignmentDescription;
+  }
+
+  return approvalData;
+};
 /*
 |--------------------------------------------------------------------------
 | RESTORE USER
@@ -194,6 +270,11 @@ interface AppContextType {
 
   addWorkflow: (
     workflow: WorkflowItem
+  ) => Promise<WorkflowItem | null>;
+
+  clarifyAssignmentWorkflow: (
+    id: string,
+    answer: string
   ) => Promise<WorkflowItem | null>;
 
   getWorkflowById: (
@@ -472,12 +553,14 @@ export const AppProvider: React.FC<{
       );
     }
 
-    try {
-      localStorage.setItem(
-        'muawin_selected_course',
-        validCourseId
-      );
-    } catch {}
+    if (validCourseId) {
+      try {
+        localStorage.setItem(
+          'muawin_selected_course',
+          validCourseId
+        );
+      } catch {}
+    }
 
     setCoursesLoading(false);
   }, [
@@ -526,6 +609,25 @@ export const AppProvider: React.FC<{
 
     return [];
   });
+
+  // Load the teacher's persistent backend audit trail after login.
+  useEffect(() => {
+    if (!user?.username) return;
+    let active = true;
+    api.get<ActivityLog[]>('/activity-logs')
+      .then((response) => {
+        if (!active || !Array.isArray(response.data)) return;
+        setActivityLogs((current) => {
+          const merged = new Map<string, ActivityLog>();
+          [...current, ...response.data].forEach((item) => merged.set(String(item.id), item));
+          return Array.from(merged.values()).sort((a, b) =>
+            new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+          );
+        });
+      })
+      .catch((error) => console.warn('[AppContext] Backend audit log unavailable:', error));
+    return () => { active = false; };
+  }, [user?.username]);
 
   // ============================================================
   // WORKFLOWS
@@ -1292,7 +1394,7 @@ export const AppProvider: React.FC<{
     useState<boolean>(false);
 
   // ============================================================
-  // LOCAL STORAGE — USER-SCOPED
+  // LOCAL STORAGE - USER-SCOPED
   // ============================================================
 
   useEffect(() => {
@@ -1354,7 +1456,7 @@ export const AppProvider: React.FC<{
   ]);
 
   // ============================================================
-  // LOGIN — REAL DYNAMIC MOELLIM AUTHENTICATION
+  // LOGIN - REAL DYNAMIC MOELLIM AUTHENTICATION
   // ============================================================
 
   const login = async (
@@ -1390,7 +1492,7 @@ export const AppProvider: React.FC<{
        */
 
       const response =
-        await api.post(
+        await api.post<any>(
           '/auth/login',
           {
             username:
@@ -1800,59 +1902,22 @@ export const AppProvider: React.FC<{
   };
 
   // ============================================================
-  // DEBUG — COURSE STATE
+  // DEBUG - COURSE STATE
   // ============================================================
 
   // ============================================================
   // BACKEND WORKFLOW SYNCHRONIZATION
   // ============================================================
 
-  // Poll only while an assignment is waiting for a lecture
-  // dependency. The interval does not depend on workflows,
-  // so state updates cannot repeatedly restart the timer.
-
+  // Keep backend workflows synchronized while the teacher is logged in.
+  // This also makes newly created approvals appear without manual refresh.
   useEffect(() => {
     if (!user?.id && !user?.username) {
       return;
     }
 
     const intervalId = window.setInterval(() => {
-      const hasPendingAssignmentDependency =
-        workflowsRef.current.some((workflow) => {
-          const workflowType = String(
-            (workflow as any).workflowType ||
-              (workflow as any).workflow_type ||
-              (workflow as any).actionType ||
-              ''
-          ).toLowerCase();
-
-          const isAssignment =
-            workflowType === 'assignment' ||
-            workflowType === 'create_assignment' ||
-            String(workflow.id || '').startsWith('awf-');
-
-          if (!isAssignment) {
-            return false;
-          }
-
-          const status = String(
-            workflow.status || ''
-          ).toLowerCase();
-
-          const dependencyStatus = String(
-            (workflow as any).dependency?.status || ''
-          ).toLowerCase();
-
-          return (
-            status === 'waiting_for_lecture' ||
-            status === 'preparing' ||
-            dependencyStatus === 'waiting_for_lecture'
-          );
-        });
-
-      if (hasPendingAssignmentDependency) {
-        void refreshBackendWorkflows();
-      }
+      void refreshBackendWorkflows();
     }, 5000);
 
     return () => {
@@ -2094,6 +2159,9 @@ const addWorkflow = async (
     const workflowPayload = {
       ...payload,
       instruction,
+      course: selectedCourse?.title || null,
+      course_id: selectedCourse?.id || selectedCourseId || null,
+      course_code: selectedCourse?.code || null,
     };
     
     /*
@@ -2182,19 +2250,15 @@ const addWorkflow = async (
       );
 
       const response =
-        await api.post(
-          '/assignment-workflows/prepare',
-          {
-            instruction,
-            workflow: {
-              ...newWf,
-              instructionText:
-                instruction,
-              payload:
-                workflowPayload,
-            },
-          }
-        );
+     await api.post<any>(
+    '/assignment-workflows/prepare',
+    {
+      instruction,
+      course: workflowPayload.course,
+      course_id: workflowPayload.course_id,
+      course_code: workflowPayload.course_code,
+    }
+  );
 
       const backendWorkflow =
         response.data;
@@ -2240,12 +2304,30 @@ const addWorkflow = async (
             backendWorkflow.id
         ),
       ]);
-
-      addToast(
-        'info',
-        'Assignment Prepared',
-        `Assignment "${backendWorkflow.title}" is ready for teacher review.`
-      );
+if (
+  backendWorkflow.status === 'needs_clarification'
+) {
+  addToast(
+    'info',
+    'More Information Required',
+    backendWorkflow.clarification_question ||
+      'Please provide the missing assignment details.'
+  );
+} else if (
+  backendWorkflow.status === 'waiting_approval'
+) {
+  addToast(
+    'success',
+    'Assignment Ready for Approval',
+    `Assignment "${backendWorkflow.title || backendWorkflow.payload?.assignment_title || backendWorkflow.payload?.assignmentTitle || backendWorkflow.assignmentTitle || "MUAWIN Assignment"}" is ready for teacher review.`
+  );
+} else {
+  addToast(
+    'info',
+    'Assignment Workflow',
+    `Current status: ${backendWorkflow.status}`
+  );
+}
 
       return backendWorkflow;
     }
@@ -2343,6 +2425,68 @@ const addWorkflow = async (
   }
 };
 
+  const clarifyAssignmentWorkflow = async (
+    id: string,
+    answer: string
+  ): Promise<WorkflowItem | null> => {
+    try {
+      const response = await api.post<any>(
+        `/assignment-workflows/${id}/clarify`,
+        { answer }
+      );
+
+      const updatedWorkflow = response.data;
+
+      if (!updatedWorkflow?.id || updatedWorkflow.id !== id) {
+        throw new Error(
+          'Backend returned an invalid clarification workflow.'
+        );
+      }
+
+      setWorkflows((prev) => [
+        updatedWorkflow,
+        ...prev.filter((w) => w.id !== id),
+      ]);
+
+      if (updatedWorkflow.status === 'waiting_approval') {
+        addToast(
+          'success',
+          'Assignment Ready for Approval',
+          'Your assignment has been prepared and is now awaiting approval.'
+        );
+      } else if (updatedWorkflow.status === 'needs_clarification') {
+        addToast(
+          'info',
+          'More Information Required',
+          updatedWorkflow.clarification_question ||
+            'Please provide the remaining details.'
+        );
+      } else {
+        addToast(
+          'info',
+          'Assignment Workflow',
+          `Current status: ${updatedWorkflow.status}`
+        );
+      }
+
+      return updatedWorkflow;
+    } catch (error: any) {
+      console.error(
+        '[AppContext] Assignment clarification failed:',
+        error
+      );
+
+      addToast(
+        'error',
+        'Clarification Failed',
+        error?.response?.data?.detail ||
+          error?.message ||
+          'Could not submit assignment clarification.'
+      );
+
+      return null;
+    }
+  };
   // ============================================================
   // GET WORKFLOW
   // ============================================================
@@ -2418,76 +2562,9 @@ const addWorkflow = async (
           `[AppContext] Calling REAL backend approval for ${id}`
         );
 
-        const payload =
-          (targetWorkflow.payload ||
-            {}) as Record<
-            string,
-            any
-          >;
+        const approvalData =
+          buildWorkflowApprovalData(targetWorkflow);
 
-        const approvalData: Record<
-          string,
-          any
-        > = {};
-
-        if (
-          typeof payload.heading ===
-            'string' &&
-          payload.heading.trim()
-        ) {
-          approvalData.heading =
-            payload.heading;
-        }
-
-        if (
-          typeof payload.description ===
-            'string' &&
-          payload.description.trim()
-        ) {
-          approvalData.description =
-            payload.description;
-        }
-
-        if (
-          Array.isArray(
-            payload.key_points
-          )
-        ) {
-          approvalData.key_points =
-            payload.key_points;
-        }
-        
-      const combinedDraft =
-        payload.combinedDraft || {};
-
-      const assignmentDraft =
-        combinedDraft.assignment || {};
-
-      const assignmentTitle =
-        payload.assignment_title ||
-        payload.assignmentTitle ||
-        assignmentDraft.title;
-
-      const assignmentDescription =
-        payload.assignment_description ||
-        payload.assignmentDescription ||
-        assignmentDraft.description;
-
-      if (
-        typeof assignmentTitle === 'string' &&
-        assignmentTitle.trim()
-      ) {
-        approvalData.assignment_title =
-          assignmentTitle;
-      }
-
-      if (
-        typeof assignmentDescription === 'string' &&
-        assignmentDescription.trim()
-      ) {
-        approvalData.assignment_description =
-          assignmentDescription;
-      }
         const approvedWorkflow =
   await workflowService.approveWorkflow(
     id,
@@ -2533,72 +2610,91 @@ const addWorkflow = async (
     };
 
 const refreshBackendWorkflows = async () => {
-  if (!user?.id && !user?.username) {
-    return;
-  }
+  if (!user?.id && !user?.username) return;
 
   try {
-    // Use the existing service to normalize backend data
-    // into the WorkflowItem structure used by the frontend.
-    const backendWorkflows =
-      await workflowService.getWorkflows();
+    const [normalResult, fileResult] = await Promise.allSettled([
+      workflowService.getWorkflows(),
+      fileAssignmentService.list(),
+    ]);
 
-    console.log(
-      '[AppContext] Backend workflows received:',
-      backendWorkflows.length
-    );
+    const normalWorkflows =
+      normalResult.status === 'fulfilled'
+        ? normalResult.value
+        : [];
+
+    const fileWorkflows =
+      fileResult.status === 'fulfilled'
+        ? fileResult.value
+        : [];
+
+    const mappedFileWorkflows: WorkflowItem[] = fileWorkflows.map((wf: any) => {
+      const draft = wf.draft || {};
+      const status =
+        wf.status === 'waiting_confirmation'
+          ? 'needs_clarification'
+          : wf.status;
+
+      return {
+        id: wf.id,
+        title: draft.title || draft.file_name || 'Assignment Document Upload',
+        description: draft.description || 'Upload existing assignment document to Moellim.',
+        courseId: wf.course,
+        courseName: wf.course,
+        status,
+        createdAt: new Date().toISOString(),
+        payload: {
+          workflowType: 'file_assignment',
+          fileAssignment: wf,
+          ...draft,
+        },
+      } as unknown as WorkflowItem;
+    });
+
+    const backendWorkflows = [
+      ...normalWorkflows,
+      ...mappedFileWorkflows,
+    ];
 
     setWorkflows((current) => {
       const backendById = new Map<string, WorkflowItem>();
 
       backendWorkflows.forEach((workflow) => {
-        if (workflow?.id) {
-          backendById.set(workflow.id, workflow);
-        }
+        if (workflow?.id) backendById.set(workflow.id, workflow);
       });
 
-      // Refresh matching workflows while preserving
-      // useful frontend-only fields.
       const merged = current.map((workflow) => {
         const backendWorkflow = backendById.get(workflow.id);
-
-        if (!backendWorkflow) {
-          return workflow;
-        }
+        if (!backendWorkflow) return workflow;
 
         return {
           ...workflow,
           ...backendWorkflow,
-          payload:
-            backendWorkflow.payload ?? workflow.payload,
-          steps:
-            backendWorkflow.steps ?? workflow.steps,
-          detectedIntent:
-            backendWorkflow.detectedIntent ??
-            workflow.detectedIntent,
+          payload: backendWorkflow.payload ?? workflow.payload,
+          steps: backendWorkflow.steps ?? workflow.steps,
+          detectedIntent: backendWorkflow.detectedIntent ?? workflow.detectedIntent,
         };
       });
 
-      // Add backend workflows that are not in frontend state.
-      const existingIds = new Set(
-        current.map((workflow) => workflow.id)
-      );
-
+      const existingIds = new Set(current.map((workflow) => workflow.id));
       const newBackendWorkflows = backendWorkflows.filter(
-        (workflow) =>
-          workflow?.id && !existingIds.has(workflow.id)
+        (workflow) => workflow?.id && !existingIds.has(workflow.id)
       );
 
       return [...newBackendWorkflows, ...merged];
     });
-  } catch (error) {
-    console.error(
-      '[AppContext] Failed to refresh backend workflows:',
-      error
+
+    console.log(
+      '[AppContext] Workflow sync:',
+      normalWorkflows.length,
+      'normal,',
+      mappedFileWorkflows.length,
+      'file assignments'
     );
+  } catch (error) {
+    console.error('[AppContext] Failed to refresh backend workflows:', error);
   }
 };
-  // ============================================================
   // REAL BACKEND REJECTION
   // ============================================================
 
@@ -2670,7 +2766,8 @@ const refreshBackendWorkflows = async () => {
         const rejectedWorkflow =
           await workflowService.rejectWorkflow(
             id,
-            reason
+            reason,
+            targetWorkflow
           );
 
         if (
@@ -2810,46 +2907,10 @@ if (
     'Confirming teacher approval with MUAWIN backend...'
   );
 
-  const payload =
-    (targetWorkflow.payload ||
-      {}) as Record<
-      string,
-      any
-    >;
+  const approvalData =
+          buildWorkflowApprovalData(targetWorkflow);
 
-  const approvalData: Record<
-    string,
-    any
-  > = {};
-
-  if (
-    typeof payload.heading ===
-      'string' &&
-    payload.heading.trim()
-  ) {
-    approvalData.heading =
-      payload.heading;
-  }
-
-  if (
-    typeof payload.description ===
-      'string' &&
-    payload.description.trim()
-  ) {
-    approvalData.description =
-      payload.description;
-  }
-
-  if (
-    Array.isArray(
-      payload.key_points
-    )
-  ) {
-    approvalData.key_points =
-      payload.key_points;
-  }
-
-  const approvedWorkflow =
+        const approvedWorkflow =
     await workflowService.approveWorkflow(
       id,
       approvalData,
@@ -3031,7 +3092,7 @@ if (
           course.id,
 
         courseName:
-          `${course.code} — ${course.title}`,
+          `${course.code} - ${course.title}`,
 
         section:
           section ||
@@ -3189,13 +3250,13 @@ if (
 
           courseCode:
             session.courseName.split(
-              ' — '
+              ' - '
             )[0] ||
             'Course',
 
           courseTitle:
             session.courseName.split(
-              ' — '
+              ' - '
             )[1] ||
             'Lecture',
 
@@ -3263,13 +3324,13 @@ if (
 
                 courseCode:
                   session.courseName.split(
-                    ' — '
+                    ' - '
                   )[0] ||
                   'Course',
 
                 courseName:
                   session.courseName.split(
-                    ' — '
+                    ' - '
                   )[1] ||
                   'Lecture',
 
@@ -3439,6 +3500,7 @@ if (
         w.status ===
         'waiting_approval'
     ).length;
+  
 
   const completedWorkflowsCount =
     workflows.filter(
@@ -3505,6 +3567,8 @@ if (
         dismissToast,
 
         addWorkflow,
+
+        clarifyAssignmentWorkflow,
 
         getWorkflowById,
 
@@ -3578,3 +3642,5 @@ export const useApp = () => {
 
   return context;
 };
+
+

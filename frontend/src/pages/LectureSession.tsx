@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { 
   Radio, 
@@ -27,8 +27,6 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { DetectedAction } from '../types';
-import { TimetableSimulatorBar } from '../components/common/TimetableSimulatorBar';
-
 export const LectureSession: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
@@ -81,11 +79,6 @@ export const LectureSession: React.FC = () => {
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto animate-in fade-in duration-200">
-      {/* Simulation Toolbar for Testing Timetable Transitions */}
-      <div className="rounded-2xl overflow-hidden shadow-sm border border-slate-800">
-        <TimetableSimulatorBar />
-      </div>
-
       {/* Mode Distinction Callout Banner */}
       <div className="bg-slate-900 text-slate-200 rounded-2xl p-4 sm:p-5 border border-slate-800 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div className="flex items-start gap-3">
@@ -184,7 +177,7 @@ export const LectureSession: React.FC = () => {
 
             <div className="flex items-center gap-1.5 text-emerald-700 font-semibold">
               <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-              <span>● Auto-start enabled</span>
+              <span>â— Auto-start enabled</span>
             </div>
           </div>
 
@@ -266,7 +259,7 @@ export const LectureSession: React.FC = () => {
                   <span>Section: <strong className="text-amber-300">{activeScheduleClass.section}</strong></span>
                   <span>•</span>
                   <span className="flex items-center gap-1">
-                    Status: <strong className="text-rose-400">● Listening</strong>
+                    Status: <strong className="text-rose-400">â— Listening</strong>
                   </span>
                   <span>•</span>
                   <span>Started: <strong className="text-white">{activeScheduleClass.startTime}</strong></span>
@@ -669,7 +662,7 @@ export const LectureSession: React.FC = () => {
                     </p>
                   </div>
                   <span className="text-[10px] font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
-                    Gate 3 Gatekeeper
+                    Teacher Review
                   </span>
                 </div>
 
@@ -820,3 +813,4 @@ export const LectureSession: React.FC = () => {
     </div>
   );
 };
+
