@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+﻿import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Sparkles,
   Mic2,
   CheckSquare,
   BookOpen,
+  FileText,
   Clock,
   CheckCircle2,
   Activity,
@@ -271,6 +272,20 @@ console.log(
             variant="secondary"
             onClick={() => navigate('/approvals')}
           />
+        </div>
+      </div>
+
+      <div>
+        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">
+          Quick Access
+        </h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4">
+          <QuickActionCard title="Course Setup" description="Upload course outline, confirm weekly topics and choose the lecture folder." buttonLabel="Open Course Setup" icon={BookOpen} variant="secondary" onClick={() => navigate('/setup')} />
+          <QuickActionCard title="Weekly Tracker" description="Track expected lectures against completed Moellim uploads." buttonLabel="Track Progress" icon={Activity} variant="secondary" onClick={() => navigate('/tracker')} />
+          <QuickActionCard title="Reminders" description="Review, acknowledge, snooze or dismiss missed-work reminders." buttonLabel="Open Reminders" icon={Clock} variant="secondary" onClick={() => navigate('/reminders')} />
+          <QuickActionCard title="Lecture Upload" description="Prepare a lecture resource for a course section through the teacher-approved command workflow." buttonLabel="Prepare Lecture" icon={BookOpen} variant="secondary" onClick={() => navigate('/assistant')} />
+          <QuickActionCard title="Assignment Builder" description="Generate and review an assignment with marks, question types and a deadline." buttonLabel="Create Assignment" icon={FileText} variant="secondary" onClick={() => navigate('/assistant')} />
+          <QuickActionCard title="Combined Workflow" description="Prepare a lecture upload and a related assignment in one supervised workflow." buttonLabel="Create Combined Plan" icon={Sparkles} variant="secondary" onClick={() => navigate('/assistant')} />
         </div>
       </div>
 

@@ -1,4 +1,4 @@
-
+﻿
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { WorkflowItem } from '../types';
+import { fileAssignmentService } from '../services/fileAssignmentService';
 
 type AnyRecord = Record<string, any>;
 
@@ -147,8 +148,12 @@ export const Approvals: React.FC = () => {
     const workflowCourseNames = [
       workflow.courseCode,
       (workflow as any).courseName,
+      (workflow as any).course_id,
+      (workflow as any).course_code,
       payload.course,
       payload.courseName,
+      payload.course_id,
+      payload.course_code,
     ]
       .map(normalizeCourseName)
       .filter(Boolean);
@@ -190,10 +195,20 @@ export const Approvals: React.FC = () => {
       return false;
     }
 
+    const approvalStatus = String(
+      workflow.status || ''
+    ).toLowerCase();
+
     if (
-      workflow.status !== 'waiting_approval' &&
-      workflow.status !== 'approved' &&
-      workflow.status !== 'executing'
+      ![
+        'waiting_approval',
+        'pending_approval',
+        'needs_approval',
+        'needs_clarification',
+        'pending',
+        'approved',
+        'executing',
+      ].includes(approvalStatus)
     ) {
       return false;
     }
@@ -239,8 +254,12 @@ export const Approvals: React.FC = () => {
       const workflowNames = [
         workflow.courseCode,
         (workflow as any).courseName,
+        (workflow as any).course_id,
+        (workflow as any).course_code,
         payload.course,
         payload.courseName,
+        payload.course_id,
+        payload.course_code,
       ]
         .map(normalizeCourseName)
         .filter(Boolean);
@@ -295,12 +314,46 @@ export const Approvals: React.FC = () => {
     });
 
     try {
-      const success = await executeWorkflowDirectly(
-        workflow.id,
-        (step, message) => {
-          setExecutionLog({ step, message });
+      const workflowPayload = asRecord(workflow.payload);
+      const isFileAssignment =
+        workflowPayload.workflowType === 'file_assignment' ||
+        !!workflowPayload.fileAssignment;
+
+      let success = false;
+
+      if (isFileAssignment) {
+        setExecutionLog({
+          step: 2,
+          message: 'Approving the existing assignment document...',
+        });
+
+        await fileAssignmentService.approve(workflow.id);
+
+        setExecutionLog({
+          step: 3,
+          message: 'Uploading the original assignment document to Moellim...',
+        });
+
+        const execution = await fileAssignmentService.execute(workflow.id);
+        success =
+          execution.status === 'completed' &&
+          execution.result?.success === true;
+
+        if (!success) {
+          throw new Error(
+            execution.error ||
+            execution.result?.message ||
+            'Moellim did not confirm successful assignment upload.'
+          );
         }
-      );
+      } else {
+        success = await executeWorkflowDirectly(
+          workflow.id,
+          (step, message) => {
+            setExecutionLog({ step, message });
+          }
+        );
+      }
 
       if (success) {
         addToast(
@@ -326,22 +379,38 @@ export const Approvals: React.FC = () => {
     }
   };
 
-  const handleConfirmReject = () => {
+  const handleConfirmReject = async () => {
     if (!rejectingWorkflow) return;
 
-    rejectWorkflow(
-      rejectingWorkflow.id,
-      rejectionReason
-    );
+    try {
+      const rejectionPayload = asRecord(rejectingWorkflow.payload);
+      const isFileAssignment =
+        rejectionPayload.workflowType === 'file_assignment' ||
+        !!rejectionPayload.fileAssignment;
 
-    addToast(
-      'info',
-      'Workflow Rejected',
-      `"${rejectingWorkflow.title}" was declined.`
-    );
+      if (isFileAssignment) {
+        await fileAssignmentService.reject(rejectingWorkflow.id);
+        addToast(
+          'success',
+          'Workflow Rejected',
+          'The existing assignment document proposal was rejected.'
+        );
+      } else {
+        await rejectWorkflow(
+          rejectingWorkflow.id,
+          rejectionReason
+        );
+      }
 
-    setRejectingWorkflow(null);
-    setRejectionReason('');
+      setRejectingWorkflow(null);
+      setRejectionReason('');
+    } catch (error) {
+      console.error(
+        '[Approvals] Could not reject workflow:',
+        error
+      );
+      // Keep the rejection dialog open so the teacher can retry.
+    }
   };
 
   const renderDetail = (
@@ -397,18 +466,6 @@ export const Approvals: React.FC = () => {
       {/* Page header */}
       <div className="flex flex-col gap-3 border-b border-slate-200/80 pb-5 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <div className="mb-1 flex flex-wrap items-center gap-2">
-            <span className="flex items-center gap-1 rounded border border-amber-100 bg-amber-50 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wider text-amber-700">
-              <ShieldCheck className="h-3.5 w-3.5" />
-              Gate 3: Human-in-the-Loop Approval
-            </span>
-
-            <span className="text-xs text-slate-400">•</span>
-
-            <span className="text-xs text-slate-500">
-              Supervised Execution
-            </span>
-          </div>
 
           <h2 className="text-2xl font-extrabold tracking-tight text-slate-900">
             Pending Approvals
@@ -421,8 +478,12 @@ export const Approvals: React.FC = () => {
         </div>
 
         <span className="rounded-xl border border-amber-200 bg-amber-100 px-3 py-1.5 text-xs font-bold text-amber-900">
-          {pendingWorkflows.length} Action
-          {pendingWorkflows.length === 1 ? '' : 's'} Pending
+          {pendingWorkflows.filter(
+            (workflow) => workflow.status !== 'needs_clarification'
+          ).length} Action
+          {pendingWorkflows.filter(
+            (workflow) => workflow.status !== 'needs_clarification'
+          ).length === 1 ? '' : 's'} Pending
         </span>
       </div>
 
@@ -494,7 +555,9 @@ export const Approvals: React.FC = () => {
       )}
 
       {/* Pending approvals */}
-      {pendingWorkflows.length === 0 ? (
+      {pendingWorkflows.filter(
+        (workflow) => workflow.status !== 'needs_clarification'
+      ).length === 0 ? (
         <div className="space-y-3 rounded-2xl border border-slate-200 bg-white p-12 text-center">
           <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl border border-emerald-200 bg-emerald-50 text-emerald-600">
             <CheckCircle2 className="h-6 w-6" />
@@ -528,7 +591,9 @@ export const Approvals: React.FC = () => {
         </div>
       ) : (
         <div className="space-y-4">
-          {pendingWorkflows.map((workflow) => {
+          {pendingWorkflows
+            .filter((workflow) => workflow.status !== 'needs_clarification')
+            .map((workflow) => {
             const isCurrentlyExecuting =
               executingWorkflowId === workflow.id;
 
@@ -538,6 +603,7 @@ export const Approvals: React.FC = () => {
               assignment,
               isCombined,
             } = getWorkflowDrafts(workflow);
+            const backendDraft = asRecord(payload.backendDraft);
 
             const lectureHeading = firstValue(
               lecture.heading,
@@ -582,26 +648,42 @@ export const Approvals: React.FC = () => {
               assignment.total_marks,
               assignment.totalMarks,
               assignment.marks,
-              assignment.max_marks
+              assignment.max_marks,
+              assignment.max_grade
+            );
+
+            const assignmentClos = firstValue(
+              assignment.clos,
+              assignment.mapped_clos,
+              assignment.mappedCLOs,
+              assignment.mapped_clo,
+              assignment.mappedClo,
+              assignment.clo,
+              assignment.CLOs,
+              asRecord(payload.fileAssignment).draft?.clos,
+              asRecord(payload.fileAssignment).draft?.mapped_clos
             );
 
             const assignmentDeadline = firstValue(
               assignment.deadline,
               assignment.due_date,
               assignment.dueDate,
-              assignment.due_datetime
+              assignment.due_datetime,
+              assignment.duedate
             );
 
             const lectureWeek = firstValue(
               lecture.week,
               lecture.week_number,
-              lecture.weekNumber
+              lecture.weekNumber,
+              backendDraft.week
             );
 
             const assignmentWeek = firstValue(
               assignment.week,
               assignment.week_number,
-              assignment.weekNumber
+              assignment.weekNumber,
+              backendDraft.week
             );
 
             return (
@@ -617,9 +699,12 @@ export const Approvals: React.FC = () => {
                     </span>
 
                     <span className="rounded bg-slate-200 px-2 py-0.5 text-xs font-bold text-slate-700">
-                      {isCombined
-                        ? 'Lecture + Assignment'
-                        : workflow.actionType}
+                      {payload.workflowType === 'file_assignment' ||
+                      payload.fileAssignment
+                        ? 'Existing Assignment File'
+                        : isCombined
+                          ? 'Lecture + Assignment'
+                          : workflow.actionType}
                     </span>
 
                     {isCombined && (
@@ -640,6 +725,21 @@ export const Approvals: React.FC = () => {
                 </div>
 
                 <div className="space-y-4 p-5">
+                  {(workflow.status === 'needs_clarification' ||
+                    payload.clarification_question) && (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+                      <h4 className="text-sm font-bold text-amber-900">
+                        Assignment clarification required
+                      </h4>
+                      <p className="mt-1 whitespace-pre-wrap text-sm text-amber-800">
+                        {payload.clarification_question ||
+                         (workflow as any).clarification_question ||
+                         workflow.error ||
+                         'Please provide the missing assignment details.'}
+                      </p>
+                    </div>
+                  )}
+                  {!(payload.workflowType === 'file_assignment' || payload.fileAssignment) && (<>
                   {/* Main workflow description */}
                   <div>
                     <h4 className="text-base font-bold text-slate-900">
@@ -658,6 +758,10 @@ export const Approvals: React.FC = () => {
                       )}
                     </p>
                   </div>
+
+                  </>)}
+
+                  {!(payload.workflowType === 'file_assignment' || payload.fileAssignment) && (<>
 
                   {/* General workflow details */}
                   <div className="grid grid-cols-1 gap-3 rounded-xl border border-slate-200/70 bg-slate-50 p-3.5 text-xs sm:grid-cols-2 lg:grid-cols-3">
@@ -696,6 +800,55 @@ export const Approvals: React.FC = () => {
                         payload.submissionType
                       )}
                   </div>
+
+                  </>)}
+
+                  {(payload.workflowType === 'file_assignment' ||
+                    payload.fileAssignment) && (
+                    <section className="space-y-3 rounded-xl border border-amber-200 bg-amber-50/40 p-4">
+                      <div className="flex items-center gap-2">
+                        <FileText className="h-5 w-5 text-amber-700" />
+                        <h5 className="text-sm font-bold text-slate-900">
+                          Existing Assignment Document Review
+                        </h5>
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        {renderDetail(
+                          'Assignment',
+                          firstValue(assignmentTitle, payload.assignment_title, payload.assignmentTitle, asRecord(payload.fileAssignment).draft?.title, workflow.title)
+                        )}
+                        {renderDetail(
+                          'Original File',
+                          firstValue(
+                            payload.file_name,
+                            asRecord(payload.fileAssignment).draft?.file_name
+                          )
+                        )}
+                        {renderDetail(
+                          'Total Marks',
+                          firstValue(
+                            assignmentMarks,
+                            asRecord(payload.fileAssignment).draft?.total_marks,
+                            asRecord(payload.fileAssignment).draft?.marks
+                          )
+                        )}
+                        {renderDetail(
+                          'Mapped CLO',
+                          firstValue(
+                            assignmentClos,
+                            asRecord(payload.fileAssignment).draft?.mappedCLOs
+                          )
+                        )}
+                        {renderDetail(
+                          'Target Week',
+                          payload.week_number
+                            ? `Week ${payload.week_number}`
+                            : undefined
+                        )}
+                      </div>
+                    </section>
+                  )}
 
                   {/* Combined lecture and assignment preview */}
                   {isCombined && (
@@ -751,7 +904,8 @@ export const Approvals: React.FC = () => {
                               lecture.filename,
                               lecture.material_name,
                               lecture.materialName,
-                              payload.fileName
+                              payload.fileName,
+                              backendDraft.file_name
                             )
                           )}
 
@@ -760,9 +914,12 @@ export const Approvals: React.FC = () => {
                             firstValue(
                               lecture.source_label,
                               lecture.sourceLabel,
+                              assignment.source_label,
+                              assignment.sourceLabel,
                               lecture.source,
                               lecture.file_path,
-                              lecture.filePath
+                              lecture.filePath,
+                              backendDraft.file_name
                             )
                           )}
                         </div>
@@ -810,17 +967,55 @@ export const Approvals: React.FC = () => {
                               2. Assignment Creation
                             </h6>
                             <p className="text-[11px] text-violet-800">
-                              Review the assignment before it is
-                              created on Moellim.
+                              {assignment.mode === 'file_upload'
+                                ? 'Review the original assignment file and target section before uploading.'
+                                : 'Review the assignment before it is created on Moellim.'}
                             </p>
                           </div>
                         </div>
 
+                        {assignment.mode === 'file_upload' ? (
+                          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                            {renderDetail('Assignment', assignmentTitle)}
+                            {renderDetail('Original File', assignment.file_name)}
+                            {renderDetail(
+                              'Total Marks',
+                              assignmentMarks !== undefined
+                                ? `${assignmentMarks} marks`
+                                : undefined
+                            )}
+                            {renderDetail('Mapped CLO', assignmentClos)}
+                            {renderDetail(
+                              'Target Week',
+                              assignmentWeek ? `Week ${assignmentWeek}` : undefined
+                            )}
+                          </div>
+                        ) : (
+                          <>
                         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                           {renderDetail(
                             'Assignment Title',
                             assignmentTitle,
                             'Assignment title not provided'
+                          )}
+
+                          {assignment.mode === 'file_upload' && (
+                            <>
+                              {renderDetail(
+                                'Original Assignment File',
+                                assignment.file_name
+                              )}
+
+                              {renderDetail(
+                                'Allow Submissions From',
+                                assignment.start_date
+                              )}
+
+                              {renderDetail(
+                                'Matched Moellim Section',
+                                assignment.section_heading
+                              )}
+                            </>
                           )}
 
                           {renderDetail(
@@ -936,6 +1131,8 @@ export const Approvals: React.FC = () => {
                             normalization.
                           </p>
                         )}
+                          </>
+                        )}
                       </section>
 
                       <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-900">
@@ -984,13 +1181,18 @@ export const Approvals: React.FC = () => {
 
                       <button
                         onClick={() => handleAuthorize(workflow)}
-                        disabled={isCurrentlyExecuting}
+                        disabled={
+                          isCurrentlyExecuting ||
+                          workflow.status === 'needs_clarification'
+                        }
                         className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-emerald-600 px-5 py-2.5 text-xs font-bold text-white shadow-xs transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
                       >
                         <Play className="h-3.5 w-3.5 fill-current" />
                         {isCurrentlyExecuting
                           ? 'Executing...'
-                          : 'Authorize & Execute on Moellim'}
+                          : workflow.status === 'needs_clarification'
+                            ? 'Clarification Required'
+                            : 'Authorize & Execute on Moellim'}
                       </button>
                     </div>
                   </div>
@@ -1060,3 +1262,6 @@ export const Approvals: React.FC = () => {
     </div>
   );
 };
+
+
+

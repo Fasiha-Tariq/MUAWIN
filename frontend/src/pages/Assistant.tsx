@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+﻿import React, { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import {
@@ -38,6 +38,7 @@ import {
 import { IntentCard } from '../components/assistant/IntentCard';
 
 import { WorkflowItem } from '../types';
+import { fileAssignmentService } from '../services/fileAssignmentService';
 
 export const Assistant: React.FC = () => {
   const navigate = useNavigate();
@@ -50,6 +51,7 @@ export const Assistant: React.FC = () => {
     selectCourse,
     addWorkflow,
     addToast,
+    clarifyAssignmentWorkflow,
   } = useApp();
 
   // ============================================================
@@ -65,6 +67,7 @@ export const Assistant: React.FC = () => {
         (location.state as any).courseId
       );
     }
+    
   }, [
     location.state,
     selectCourse,
@@ -79,6 +82,12 @@ export const Assistant: React.FC = () => {
 
   const [isProcessing, setIsProcessing] =
     useState(false);
+
+  const [pendingAssignmentClarification, setPendingAssignmentClarification] =
+    useState<WorkflowItem | null>(null);
+
+  const [assignmentClarificationAnswer, setAssignmentClarificationAnswer] =
+    useState('');
 
   const [interpretations, setInterpretations] =
     useState<InterpretationResult[]>([]);
@@ -97,6 +106,30 @@ export const Assistant: React.FC = () => {
 
   const [showWorkflowPlan, setShowWorkflowPlan] =
     useState(false);
+
+  const [pendingFileAssignment, setPendingFileAssignment] =
+    useState<any | null>(null);
+
+  const [showNoAssignmentFileModal, setShowNoAssignmentFileModal] =
+    useState(false);
+
+  const [fileAssignmentFileName, setFileAssignmentFileName] =
+    useState('');
+
+  const [fileAssignmentWeek, setFileAssignmentWeek] =
+    useState('');
+
+  const [fileAssignmentTitle, setFileAssignmentTitle] =
+    useState('');
+
+  const [fileAssignmentStartDate, setFileAssignmentStartDate] =
+    useState('');
+
+  const [fileAssignmentDueDate, setFileAssignmentDueDate] =
+    useState('');
+
+  const [fileAssignmentMarks, setFileAssignmentMarks] =
+    useState('');
 
   // ============================================================
   // VOICE STATE
@@ -244,52 +277,10 @@ export const Assistant: React.FC = () => {
       return [];
     }
 
-    if (
-      selectedCourse.code.includes('PDC') ||
-      selectedCourse.id.includes('pdc')
-    ) {
-      return [
-        'Upload Lecture 2 and create an assignment.',
-        'Create Assignment 1 on MPI Ring Passing & Distributed Topologies (20 marks)',
-        'Upload Lecture 02 slides on Distributed Memory Architectures to Moellim',
-        'Create a reminder for the PDC Quiz on Friday morning',
-      ];
-    }
-
-    if (
-      selectedCourse.code.includes('HCI')
-    ) {
-      return [
-        'Create Assignment 2 on Nielsen Usability Heuristics due Oct 5, total 20 marks',
-        'Upload lecture slides for Week 4 on Cognitive Walkthrough and Prototyping',
-        'Post announcement about Midterm Usability Project submission guidelines',
-      ];
-    }
-
-    if (
-      selectedCourse.code.includes('AI')
-    ) {
-      return [
-        'Create Assignment on A* Search Algorithm vs Greedy Best-First, due next Friday',
-        'Post announcement: AI Quiz 2 will cover Alpha-Beta Pruning on Tuesday',
-        'Upload Lab 3 starter code for Adversarial Search Games to Moellim',
-      ];
-    }
-
-    if (
-      selectedCourse.code.includes('ML')
-    ) {
-      return [
-        'Create Assignment on Linear Regression with Gradient Descent (due next Wednesday)',
-        'Post reminder: Submit Kaggle competition notebook before midnight Friday',
-        'Upload lecture notes on Bias-Variance Tradeoff to Week 5 folder',
-      ];
-    }
-
     return [
-      `Create Assignment 1 for ${selectedCourse.code} due next Monday, 15 marks`,
-      `Post urgent announcement for ${selectedCourse.code} class regarding schedule`,
-      `Upload lecture notes for this week to ${selectedCourse.code} repository`,
+      "Create an assignment from this week's lecture",
+      "Upload this week's lecture notes",
+      "Upload this week's lecture notes and create an assignment from the lecture",
     ];
   };
 
@@ -468,7 +459,7 @@ export const Assistant: React.FC = () => {
     };
 
   // ============================================================
-  // LIVE MICROPHONE TRANSCRIPTION — COMMAND MODE ONLY
+  // LIVE MICROPHONE TRANSCRIPTION - COMMAND MODE ONLY
   // ============================================================
 
   const updatePromptFromTranscript = (
@@ -794,7 +785,7 @@ export const Assistant: React.FC = () => {
 
           updatePromptFromTranscript(
             speechFinalTextRef.current,
-            speechInterimTextRef.current
+            ''
           );
 
           setVoiceState('listening');
@@ -1085,6 +1076,70 @@ export const Assistant: React.FC = () => {
       // SINGLE WORKFLOW
       // --------------------------------------------------------
       if (interpretations.length === 1) {
+        if (
+          interpretations[0].workflowType === 'file_assignment'
+        ) {
+          const prepared = await fileAssignmentService.prepare(
+          selectedCourse.title || selectedCourse.code,
+          interpretations[0].rawInstruction
+          );
+
+          if (prepared.status === 'no_match') {
+            setPendingFileAssignment(prepared);
+            setShowNoAssignmentFileModal(true);
+            return;
+          }
+
+          if (prepared.status !== 'waiting_confirmation') {
+            throw new Error(
+              prepared.error ||
+              'MUAWIN could not prepare the existing assignment document.'
+            );
+          }
+
+          const initialDraft = prepared.draft || {};
+          const initialCandidate =
+            (prepared.candidates || []).find(
+              (item: any) =>
+                item.file_name === initialDraft.file_name
+            ) || {};
+
+          const initialWeek = initialDraft.week_number ?? '';
+
+          setPendingFileAssignment(prepared);
+          setFileAssignmentFileName(
+            initialDraft.file_name || initialCandidate.file_name || ''
+          );
+          setFileAssignmentWeek(String(initialWeek || ''));
+          setFileAssignmentTitle(
+            initialDraft.title ?? initialCandidate.title ?? ''
+          );
+          setFileAssignmentStartDate(
+            initialDraft.start_date ?? initialCandidate.start_date ?? ''
+          );
+          setFileAssignmentDueDate(
+            initialDraft.due_date ?? initialCandidate.due_date ?? ''
+          );
+
+          const initialMarks =
+            initialDraft.total_marks ?? initialCandidate.total_marks;
+
+          setFileAssignmentMarks(
+            initialMarks !== undefined && initialMarks !== null
+              ? String(initialMarks)
+              : ''
+          );          setShowNoAssignmentFileModal(false);
+          setIsSubmittedToApproval(false);
+          setShowWorkflowPlan(false);
+
+          addToast(
+            'info',
+            'Confirm Assignment Document',
+            'Review the selected document and its extracted details before sending it to Approvals.'
+          );
+          return;
+        }
+
         const workflow = buildWorkflowFromInterpretation(
           interpretations[0],
           0
@@ -1207,12 +1262,37 @@ export const Assistant: React.FC = () => {
       }
 
       if (createdWorkflows.length === 0) {
-        throw new Error(
-          'MUAWIN did not return a prepared workflow.'
-        );
-      }
+  throw new Error(
+    'MUAWIN did not return a prepared workflow.'
+  );
+}
 
-      setIsSubmittedToApproval(true);
+const clarificationWorkflow = createdWorkflows.find(
+  (workflow) =>
+    (workflow as any).status === 'needs_clarification'
+);
+
+if (clarificationWorkflow) {
+  setPendingAssignmentClarification(
+    clarificationWorkflow
+  );
+
+  setAssignmentClarificationAnswer('');
+  setIsSubmittedToApproval(false);
+  setShowWorkflowPlan(false);
+
+  addToast(
+    'info',
+    'Assignment Details Required',
+    (clarificationWorkflow as any).clarification_question ||
+      'Please provide the missing assignment details.'
+  );
+
+  return;
+}
+
+setIsSubmittedToApproval(true);
+      setShowWorkflowPlan(true);
 
       addToast(
         'success',
@@ -1246,6 +1326,144 @@ export const Assistant: React.FC = () => {
     }
   };
 
+    // ============================================================
+  // CONFIRM EXISTING ASSIGNMENT DOCUMENT
+  // ============================================================
+
+  const handleConfirmFileAssignment = async () => {
+    if (
+      !pendingFileAssignment?.id ||
+      !fileAssignmentFileName ||
+      isProcessing
+    ) {
+      return;
+    }
+
+    const parsedWeek = Number(fileAssignmentWeek);
+    if (!Number.isInteger(parsedWeek) || parsedWeek < 1) {
+      addToast(
+        'error',
+        'Week Required',
+        'Please select or enter the Moellim week for this assignment.'
+      );
+      return;
+    }
+
+    setIsProcessing(true);
+
+    try {
+      const confirmed = await fileAssignmentService.confirm(
+        pendingFileAssignment.id,
+        {
+          file_name: fileAssignmentFileName,
+          week_number: parsedWeek,
+          title: fileAssignmentTitle.trim() || undefined,
+          start_date: fileAssignmentStartDate || undefined,
+          due_date: fileAssignmentDueDate || undefined,
+          total_marks:
+            fileAssignmentMarks.trim() &&
+            Number.isFinite(Number(fileAssignmentMarks))
+              ? Number(fileAssignmentMarks)
+              : undefined,
+        }
+      );
+
+      if (confirmed.status !== 'waiting_approval') {
+        throw new Error(
+          confirmed.error ||
+          'The assignment document could not be confirmed.'
+        );
+      }
+
+      setPendingFileAssignment(null);
+      setIsSubmittedToApproval(true);
+      setShowWorkflowPlan(true);
+
+      addToast(
+        'success',
+        'Assignment Ready for Approval',
+        'The existing assignment document has been staged in Approvals. It has not been uploaded to Moellim yet.'
+      );
+    } catch (error: any) {
+      addToast(
+        'error',
+        'Confirmation Failed',
+        error?.message || 'Could not confirm the assignment document.'
+      );
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleCreateNewAssignmentInstead = () => {
+    setShowNoAssignmentFileModal(false);
+    setPendingFileAssignment(null);
+
+    const generationInstruction =
+      `Create a new assignment using the relevant lecture content for ${selectedCourse?.title || selectedCourse?.code || 'the selected course'}.`;
+
+    setPrompt(generationInstruction);
+    handleInterpret(generationInstruction);
+  };
+
+  // ============================================================
+  // SUBMIT ASSIGNMENT CLARIFICATION
+  // ============================================================
+
+  const handleAssignmentClarification = async () => {
+    if (
+      !pendingAssignmentClarification?.id ||
+      !assignmentClarificationAnswer.trim() ||
+      isProcessing
+    ) {
+      return;
+    }
+
+    setIsProcessing(true);
+
+    try {
+      const updated = await clarifyAssignmentWorkflow(
+        pendingAssignmentClarification.id,
+        assignmentClarificationAnswer.trim()
+      );
+
+      if (!updated) {
+        return;
+      }
+
+      if (updated.status === 'needs_clarification') {
+        setPendingAssignmentClarification(updated);
+        setAssignmentClarificationAnswer('');
+        return;
+      }
+
+      if (updated.status === 'waiting_approval') {
+        setPendingAssignmentClarification(null);
+        setAssignmentClarificationAnswer('');
+        setIsSubmittedToApproval(true);
+        setShowWorkflowPlan(true);
+
+        addToast(
+          'success',
+          'Assignment Ready',
+          'Your assignment is ready for teacher approval.'
+        );
+      }
+    } catch (error: any) {
+      console.error(
+        '[Assistant] Clarification submission failed:',
+        error
+      );
+
+      addToast(
+        'error',
+        'Clarification Failed',
+        error?.message || 'Could not submit assignment details.'
+      );
+    } finally {
+      setIsProcessing(false);
+    }
+  };
   // ============================================================
   // RESET CURRENT COMMAND
   // ============================================================
@@ -1320,7 +1538,7 @@ export const Assistant: React.FC = () => {
               </div>
 
               <h3 className="text-base font-bold text-white mt-0.5">
-                AI Assistant — Direct Text & Spoken Command Mode
+                AI Assistant - Direct Text & Spoken Command Mode
               </h3>
 
               <p className="text-xs text-slate-300 mt-0.5 max-w-2xl">
@@ -1399,7 +1617,7 @@ export const Assistant: React.FC = () => {
                 </span>
 
                 <span className="text-xs text-slate-400">
-                  •
+                  -
                 </span>
 
                 <span className="text-xs font-semibold text-slate-600">
@@ -1410,7 +1628,7 @@ export const Assistant: React.FC = () => {
 
               <h3 className="text-base font-bold text-slate-900 mt-0.5">
                 {selectedCourse
-                  ? `${selectedCourse.code} — ${selectedCourse.title}`
+                  ? `${selectedCourse.code} - ${selectedCourse.title}`
                   : 'No Course Selected'}
               </h3>
 
@@ -1463,29 +1681,203 @@ export const Assistant: React.FC = () => {
 
       </div>
 
-      {/* ======================================================
-          COMMAND INTERFACE
-      ====================================================== */}
+{/* ======================================================
+    COMMAND INTERFACE
+====================================================== */}
 
-      <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200 shadow-xs space-y-3 sm:space-y-4">
+<div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200 shadow-xs space-y-3 sm:space-y-4">
 
-        <div className="flex items-center justify-between">
+  {pendingFileAssignment?.status === 'waiting_confirmation' && (
+          <div className="mb-5 rounded-2xl border border-blue-200 bg-blue-50/60 p-5">
+            <div className="mb-3 flex items-center gap-2">
+              <FileText className="h-5 w-5 text-blue-700" />
+              <h3 className="text-sm font-bold text-slate-900">
+                Confirm Existing Assignment Document
+              </h3>
+            </div>
 
-          <label className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+            <p className="mb-4 text-xs text-slate-600">
+              MUAWIN searched only the saved folder for the selected course.
+              Review the extracted details and confirm before this item enters Approvals.
+            </p>
 
-            <Sliders className="w-3.5 h-3.5 text-blue-600" />
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="sm:col-span-2">
+                <label className="mb-1 block text-xs font-semibold text-slate-700">
+                  Assignment document
+                </label>
+                <select
+                  value={fileAssignmentFileName}
+                  onChange={(event) => {
+                    const selectedName = event.target.value;
+                    setFileAssignmentFileName(selectedName);
+                    const candidate = (pendingFileAssignment.candidates || []).find(
+                      (item: any) => item.file_name === selectedName
+                    );
+                    if (candidate) {
+                      setFileAssignmentTitle(candidate.title || '');
+                      setFileAssignmentStartDate(candidate.start_date || '');
+                      setFileAssignmentDueDate(candidate.due_date || '');
+                      setFileAssignmentMarks(
+                        candidate.total_marks !== undefined
+                          ? String(candidate.total_marks)
+                          : ''
+                      );
+                      setFileAssignmentWeek(String(candidate.week_number ?? ''));
+                    }
+                  }}
+                  className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-xs"
+                >
+                  {(pendingFileAssignment.candidates || []).map((candidate: any) => (
+                    <option key={candidate.file_name} value={candidate.file_name}>
+                      {candidate.file_name}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-            <span>
-              MUAWIN Command Bar
-            </span>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-700">
+                  Assignment title
+                </label>
+                <input
+                  value={fileAssignmentTitle}
+                  onChange={(event) => setFileAssignmentTitle(event.target.value)}
+                  className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-xs"
+                  placeholder="Assignment title"
+                />
+              </div>
 
-          </label>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-700">
+                  Moellim week
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  value={fileAssignmentWeek}
+                  onChange={(event) => setFileAssignmentWeek(event.target.value)}
+                  className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-xs"
+                  placeholder="Week number"
+                />
+              </div>
 
-          <span className="text-[11px] text-slate-400 font-medium">
-            Type or speak an instruction
-          </span>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-700">
+                  Allow submissions from
+                </label>
+                <input
+                  type="date"
+                  value={fileAssignmentStartDate}
+                  onChange={(event) => setFileAssignmentStartDate(event.target.value)}
+                  className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-xs"
+                />
+              </div>
 
-        </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-700">
+                  Due date
+                </label>
+                <input
+                  type="date"
+                  value={fileAssignmentDueDate}
+                  onChange={(event) => setFileAssignmentDueDate(event.target.value)}
+                  className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-xs"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-700">
+                  Total marks
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  value={fileAssignmentMarks}
+                  onChange={(event) => setFileAssignmentMarks(event.target.value)}
+                  className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-xs"
+                  placeholder="Marks"
+                />
+              </div>
+            </div>
+
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setPendingFileAssignment(null);
+                  setFileAssignmentFileName('');
+                  setFileAssignmentWeek('');
+                }}
+                className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-600"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isProcessing || !fileAssignmentFileName}
+                onClick={handleConfirmFileAssignment}
+                className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-50"
+              >
+                {isProcessing ? 'Confirming...' : 'Confirm & Send to Approvals'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {pendingAssignmentClarification && (
+    <div className="rounded-xl border border-amber-300 bg-amber-50 p-4">
+      <h3 className="font-semibold text-amber-900">
+        Assignment Details Required
+      </h3>
+
+      <p className="mt-2 text-sm text-slate-700">
+        {(pendingAssignmentClarification as any)
+          .clarification_question ||
+          'Please provide the missing assignment details.'}
+      </p>
+
+      <textarea
+        value={assignmentClarificationAnswer}
+        onChange={(e) =>
+          setAssignmentClarificationAnswer(e.target.value)
+        }
+        placeholder="Enter the required details..."
+        rows={3}
+        className="mt-3 w-full rounded-lg border border-slate-300 bg-white p-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+      />
+
+      <button
+        type="button"
+        onClick={handleAssignmentClarification}
+        disabled={
+          isProcessing ||
+          !assignmentClarificationAnswer.trim()
+        }
+        className="mt-3 rounded-lg bg-blue-600 px-5 py-2 text-sm font-semibold text-white disabled:opacity-50"
+      >
+        {isProcessing ? 'Preparing Assignment...' : 'Submit Details'}
+      </button>
+    </div>
+  )}
+
+  <div className="flex items-center justify-between">
+
+    <label className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+
+      <Sliders className="w-3.5 h-3.5 text-blue-600" />
+
+      <span>
+        MUAWIN Command Bar
+      </span>
+
+    </label>
+
+    <span className="text-[11px] text-slate-400 font-medium">
+      Type or speak an instruction
+    </span>
+
+  </div>
 
         {/* ====================================================
             MOBILE COMMAND BAR
@@ -1533,7 +1925,7 @@ export const Assistant: React.FC = () => {
                     className="w-full text-left p-2 rounded-lg hover:bg-blue-50 text-slate-800 transition-colors"
                   >
                     <span className="font-bold text-blue-700 block">
-                      ⚡ Multi-Action Directive
+                      Ã¢Å¡Â¡ Multi-Action Directive
                     </span>
 
                     <span className="text-[11px] text-slate-500">
@@ -1573,6 +1965,7 @@ export const Assistant: React.FC = () => {
 
             <textarea
               rows={2}
+              dir="auto"
               value={prompt}
               onChange={(e) =>
                 setPrompt(
@@ -1692,7 +2085,7 @@ export const Assistant: React.FC = () => {
                   className="w-full text-left p-2 rounded-lg hover:bg-blue-50 text-slate-800 transition-colors"
                 >
                   <span className="font-bold text-blue-700 block">
-                    ⚡ Multi-Action Directive
+                    Ã¢Å¡Â¡ Multi-Action Directive
                   </span>
 
                   <span className="text-[11px] text-slate-500">
@@ -1779,7 +2172,8 @@ export const Assistant: React.FC = () => {
 
           <input
             type="text"
-            value={prompt}
+            dir="auto"
+              value={prompt}
             onChange={(e) =>
               setPrompt(
                 e.target.value
@@ -1880,9 +2274,6 @@ export const Assistant: React.FC = () => {
                 <span className="text-[10px] bg-blue-200/80 text-blue-800 font-semibold px-2 py-0.5 rounded-full">
                   Live Speech-to-Text
                 </span>
-                <span>
-                    Live transcription uses the MUAWIN backend. Review and edit the recognized text in the command bar before clicking Send.
-                </span>
               </div>
 
               <button
@@ -1911,7 +2302,7 @@ export const Assistant: React.FC = () => {
                   <div>
 
                     <span className="text-xs font-bold text-rose-700 block">
-                      🔴 Listening to Teacher Microphone...
+                      Listening to Teacher Microphone...
                     </span>
 
                     <span className="text-xs text-slate-600 italic">
@@ -1975,55 +2366,9 @@ export const Assistant: React.FC = () => {
               'idle' && (
               <div className="space-y-2">
 
-                <p className="text-[11px] font-semibold text-slate-600">
-                  Select a voice instruction below or click the microphone to speak:
-                </p>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-
-                  {SAMPLE_VOICE_COMMANDS.map(
-                    (sample) => (
-                      <button
-                        key={
-                          sample.id
-                        }
-                        type="button"
-                        onClick={() =>
-                          handleVoiceCommand(
-                            sample
-                          )
-                        }
-                        className="text-left p-2.5 rounded-xl bg-white hover:bg-blue-100/50 border border-blue-200/80 hover:border-blue-300 transition-all text-xs group"
-                      >
-
-                        <div className="flex items-center justify-between">
-
-                          <span className="font-bold text-slate-900 group-hover:text-blue-700">
-                            {sample.label}
-                          </span>
-
-                          <Mic className="w-3.5 h-3.5 text-slate-400 group-hover:text-blue-600" />
-
-                        </div>
-
-                        <p className="text-[11px] text-slate-600 mt-1 italic">
-                          "{sample.transcript}"
-                        </p>
-
-                      </button>
-                    )
-                  )}
-
-                </div>
-
-                <p className="text-[10px] text-slate-500 pt-1 flex items-center gap-1">
-
-                  <Info className="w-3 h-3 text-slate-400 shrink-0" />
-
-                  <span>
-                    Note: High-fidelity Speech-to-Text simulation ready for Whisper / Cloud STT WebSocket connection in MUAWIN backend.
-                  </span>
-
+                <p className="text-xs text-slate-600">
+                  Speak your instruction. MUAWIN will transcribe it into the command bar,
+                  where you can review and edit it before sending.
                 </p>
 
               </div>
@@ -2039,9 +2384,7 @@ export const Assistant: React.FC = () => {
         <div>
 
           <p className="text-[11px] font-semibold text-slate-400 mb-1.5">
-            Quick Prompts for{' '}
-            {selectedCourse?.code ||
-              'Parallel and Distributed Computing'}:
+            Quick Prompts:
           </p>
 
           <div className="flex flex-wrap gap-2">
@@ -2422,7 +2765,7 @@ export const Assistant: React.FC = () => {
                     {
                       activeInterpretation.courseCode
                     }{' '}
-                    —{' '}
+                    -{' '}
                     {
                       activeInterpretation.courseName
                     }
@@ -2894,7 +3237,7 @@ export const Assistant: React.FC = () => {
                             .includes(
                               'approval'
                             )
-                            ? 'Gate 3 Approval'
+                            ? 'Approval Required'
                             : 'Automated Step'}
                         </span>
 
@@ -2917,11 +3260,7 @@ export const Assistant: React.FC = () => {
                   <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
 
                   <span>
-                    Requires instructor confirmation at{' '}
-                    <strong>
-                      Gate 3 (Human Teacher Approval)
-                    </strong>{' '}
-                    prior to touching Moellim.
+                    Instructor confirmation is required before MUAWIN performs any action on Moellim.
                   </span>
 
                 </div>
@@ -2982,7 +3321,7 @@ export const Assistant: React.FC = () => {
                       >
 
                         <span>
-                          Submit for Teacher Approval (Gate 3)
+                          Submit for Approval
                         </span>
 
                         <ArrowRight className="w-4 h-4" />
@@ -3012,6 +3351,48 @@ export const Assistant: React.FC = () => {
           </div>
         )}
 
+      {showNoAssignmentFileModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl">
+            <div className="mb-3 flex items-center gap-2">
+              <FileText className="h-5 w-5 text-amber-600" />
+              <h3 className="text-sm font-bold text-slate-900">
+                No Existing Assignment Found
+              </h3>
+            </div>
+            <p className="text-xs leading-relaxed text-slate-600">
+              MUAWIN could not find a matching PDF, DOCX, or TXT assignment document
+              in this course's saved folder. You can create a new assignment instead.
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowNoAssignmentFileModal(false);
+                  setPendingFileAssignment(null);
+                }}
+                className="rounded-lg border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-600"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleCreateNewAssignmentInstead}
+                className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-bold text-white"
+              >
+                Create Assignment
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 };
+
+
+
+
+
+
