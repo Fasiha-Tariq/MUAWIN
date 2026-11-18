@@ -1,0 +1,38 @@
+{
+  "status": "success",
+  "course": "CS7 MUAWIN (Female)",
+  "course_id": "6381",
+  "week": "Week 4",
+  "moodle_section": {
+    "num": 4,
+    "heading": "6 September - 12 September 6 September - 12 September Edit View Edit settings Duplicate Hide Move Permalink Delete",
+    "method": "Moodle section number 4 (course headings carry no 'Week N' label)"
+  },
+  "lecture_file": "Lecture 4.pptx",
+  "lecture_heading": "Lecture 4",
+  "lecture_source": "Lecture 4.pptx (the lecture being uploaded)",
+  "title": "CS7 Week 4 Assignment 4",
+  "pdf_file": "C:\\Users\\HP\\Desktop\\FASI\\FYP - MUAWIN\\MUAWIN\\backend\\data\\assignment_pdfs\\CS7_Week_4_Assignment_4.pdf",
+  "max_grade": 5,
+  "duedate": "2026-10-12T23:59:00",
+  "question_types": {
+    "short": 1,
+    "long": 1
+  },
+  "question_count": 2,
+  "questions": [
+    {
+      "number": 1,
+      "question_type": "short",
+      "question": "Explain the meaning of Market Share as presented in the lecture.",
+      "marks": 1
+    },
+    {
+      "number": 2,
+      "question_type": "long",
+      "question": "Explain marketing plan in detail using the lecture material. Discuss the relevant points and explain their importance.",
+      "marks": 4
+    }
+  ],
+  "message": "Lecture uploaded and assignment created (PDF attached) in the same week."
+}
