@@ -1,0 +1,35 @@
+{
+  "status": "success",
+  "course": "CS7 MUAWIN (Female)",
+  "course_id": "6381",
+  "week": "Week 3",
+  "moodle_section": {
+    "num": 3,
+    "heading": "30 August - 5 September",
+    "method": "Moodle section number 3 (course headings carry no 'Week N' label)"
+  },
+  "lecture_source": "Lecture 2 (found in section-2)",
+  "title": "CS7 Week 3 Assignment 3",
+  "pdf_file": "C:\\Users\\HP\\Desktop\\FASI\\FYP - MUAWIN\\MUAWIN\\backend\\data\\assignment_pdfs\\CS7_Week_3_Assignment_3.pdf",
+  "max_grade": 10,
+  "duedate": "2026-10-10T23:59:00",
+  "question_types": {
+    "long": 2
+  },
+  "question_count": 2,
+  "questions": [
+    {
+      "number": 1,
+      "question_type": "long",
+      "question": "Explain Unit Economics in detail. Discuss its working, key characteristics and importance with a suitable example.",
+      "marks": 5
+    },
+    {
+      "number": 2,
+      "question_type": "long",
+      "question": "Explain Zero-Friction UX in detail. Discuss its working, key characteristics and importance with a suitable example.",
+      "marks": 5
+    }
+  ],
+  "message": "Assignment created successfully. Questions were attached as a PDF and the assignment was verified in the requested week."
+}
