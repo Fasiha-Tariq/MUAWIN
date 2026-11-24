@@ -39,3 +39,13 @@ For a working deployment, run `backend.server_ai:app` separately as a long-runni
 - Set `VITE_API_BASE_URL=https://your-backend.example/api` in the Vercel project before deploying.
 - Set `MUAWIN_CORS_ORIGINS=https://your-frontend.vercel.app` on the backend. Use a comma-separated list if you have multiple frontend origins.
 - Keep `GEMINI_API_KEY` and any n8n credentials in the backend environment.
+
+### Host the backend container
+
+The root `Dockerfile` installs the Python dependencies and Playwright Chromium. It starts the full API on the host's `PORT` with one worker, so teacher sessions and browser workflows stay in the same process.
+
+Create a Docker web service from this repository, using the repository root as the build context and `Dockerfile` as the Dockerfile path. Use `/api/health` as its health check. Set `GEMINI_API_KEY` and `MUAWIN_CORS_ORIGINS=https://muawin-lovat.vercel.app` on the backend host, together with any optional Gemini or n8n settings.
+
+Mount persistent storage at `/app/backend/data` for SQLite databases and uploaded course documents. The container starts with a fresh data directory. Set up courses again and provide materials on the server, because a hosted backend cannot read folders on your laptop. Google Drive integration requires its OAuth files to be provisioned separately.
+
+Once the service is healthy, set the Vercel project's `VITE_API_BASE_URL` to the service's HTTPS address followed by `/api`, then redeploy the frontend.
