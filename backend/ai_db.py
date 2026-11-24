@@ -357,6 +357,9 @@ def _refresh_setup_completion(teacher: str, course: str) -> bool:
                 (key,)
             ).fetchone()
             folder = row["folder_path"]
+            if os.getenv("MUAWIN_CLOUD") == "1":
+                from .cloud_files import course_folder
+                folder = course_folder(teacher, key, folder)
             has_timetable = bool(
                 row["timetable_confirmed"]
                 or db.execute(
@@ -667,7 +670,11 @@ def get_course_setup(teacher: str, course: str) -> Dict[str, Any]:
             row=db.execute("SELECT * FROM course_setup WHERE teacher=? AND course_key=?",
                            (teacher.strip(),course_key(course))).fetchone()
         if not row: return {"course":course,"folder_path":None,"timetable":None,"timetable_confirmed":False,"outline_confirmed":False,"semester_started_at":None,"setup_completed":False,"outline_status_ready":False,"schedule_status_ready":False}
-        return {"course":row["course"],"folder_path":row["folder_path"],
+        folder = row["folder_path"]
+        if os.getenv("MUAWIN_CLOUD") == "1":
+            from .cloud_files import course_folder
+            folder = course_folder(teacher, course_key(course), folder)
+        return {"course":row["course"],"folder_path":folder,
                 "setup_completed":bool(row["setup_completed"]),
                 "outline_status_ready":bool(row["outline_status_ready"]),
                 "schedule_status_ready":bool(row["schedule_status_ready"]),

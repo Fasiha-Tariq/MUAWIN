@@ -2,6 +2,7 @@
 import { CalendarDays, CheckCircle2, FolderOpen, Loader2, RefreshCw, X } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { featureService, ClassScheduleSlot } from '../services/featureService';
+import { api } from '../services/api';
 
 type ProcessingStep = {
   id: string;
@@ -36,6 +37,8 @@ export const CourseSetup: React.FC = () => {
   const [moellimVerification, setMoellimVerification] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
+  const hosted = !['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname);
+  const [uploading, setUploading] = useState(false);
 
   // Processing card state when saving folder
   const [folderProcessing, setFolderProcessing] = useState(false);
@@ -604,7 +607,36 @@ export const CourseSetup: React.FC = () => {
         </div>
       )}
 
-      <section className="bg-white rounded-2xl border border-slate-200 p-5 sm:p-6 space-y-4">
+      {hosted && <section className="bg-white rounded-2xl border border-slate-200 p-5 sm:p-6 space-y-4">
+        <h2 className="font-bold text-slate-900">Course materials</h2>
+        <p className="text-sm text-slate-500">Upload outlines, slides, and assignment files for the selected course.</p>
+        <label className="block text-sm font-medium text-slate-700">
+          {uploading ? 'Uploading materials…' : 'Choose course files'}
+          <input type="file" multiple disabled={uploading || !selectedCourse}
+            accept=".pdf,.ppt,.pptx,.doc,.docx,.txt,.csv,.xlsx" className="mt-2 block w-full text-sm"
+            onChange={async event => {
+              const input = event.currentTarget;
+              const files = Array.from(input.files || []);
+              if (!files.length || !selectedCourse) return;
+              const form = new FormData();
+              form.append('course_id', selectedCourse.id);
+              files.forEach(file => form.append('files', file));
+              setUploading(true);
+              try {
+                const { data } = await api.postForm<{files: string[]; folder_path: string}>('/materials/upload', form);
+                setSavedFolderPath(data.folder_path);
+                setFolderPath(data.folder_path);
+                setMessage('Uploaded ' + data.files.join(', '));
+              } catch (error) {
+                setMessage(error instanceof Error ? error.message : 'Upload failed.');
+              } finally {
+                setUploading(false);
+                input.value = '';
+              }
+            }} />
+        </label>
+      </section>}
+      {!hosted && <section className="bg-white rounded-2xl border border-slate-200 p-5 sm:p-6 space-y-4">
         <div className="flex items-center gap-3">
           <FolderOpen className="text-blue-600" />
           <div>
@@ -690,7 +722,7 @@ export const CourseSetup: React.FC = () => {
             ))}
           </div>
         )}
-      </section>
+      </section>}
 
       <section className="bg-white rounded-2xl border border-slate-200 p-5 sm:p-6 space-y-4">
         <div className="flex items-center gap-3">

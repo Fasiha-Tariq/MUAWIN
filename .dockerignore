@@ -1,6 +1,8 @@
 .git
 .github
-frontend
+frontend/node_modules
+frontend/dist
+frontend/test-results
 _archive
 **/__pycache__
 **/*.pyc
@@ -16,5 +18,4 @@ backend/tests
 backend/test_database.py
 backend/*.pdf
 backend/*.pptx
-*.html
 *_files
