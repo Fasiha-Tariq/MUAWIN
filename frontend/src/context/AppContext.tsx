@@ -30,6 +30,7 @@ import {
 
 import { workflowService } from '../services/workflowService';
 import { fileAssignmentService } from '../services/fileAssignmentService';
+import { classModeService, ClassStatus } from '../services/classModeService';
 import { api } from '../services/api';
 
 /*
@@ -229,6 +230,8 @@ const getStoredCourses = (): Course[] => {
 */
 
 interface AppContextType {
+  liveClassStatus: ClassStatus | null;
+  liveClassError: string;
   user: UserProfile | null;
 
   courses: Course[];
@@ -461,6 +464,39 @@ export const AppProvider: React.FC<{
     courses,
     selectedCourseId,
   ]);
+
+  const [classStatus, setClassStatus] = useState<{
+    courseId: string; teacher: string; data: ClassStatus | null; error: string;
+  } | null>(null);
+  const classCourseId = selectedCourse?.id;
+  const classTeacher = user?.username;
+  const liveClass = classStatus?.courseId === classCourseId && classStatus?.teacher === classTeacher
+    ? classStatus : null;
+  useEffect(() => {
+    if (!classTeacher || !classCourseId?.startsWith('moellim-')) return;
+    let mounted = true;
+    let loading = false;
+    async function refresh() {
+      if (loading) return;
+      loading = true;
+      try {
+        const { data } = await classModeService.status(classCourseId!);
+        if (mounted) setClassStatus({ courseId: classCourseId!, teacher: classTeacher!, data, error: '' });
+      } catch (error) {
+        if (mounted) setClassStatus(previous => ({
+          courseId: classCourseId!, teacher: classTeacher!,
+          data: previous && previous.courseId === classCourseId && previous.teacher === classTeacher
+            ? previous.data : null,
+          error: error instanceof Error ? error.message : String(error),
+        }));
+      } finally {
+        loading = false;
+      }
+    }
+    void refresh();
+    const timer = window.setInterval(refresh, 4000);
+    return () => { mounted = false; window.clearInterval(timer); };
+  }, [classTeacher, classCourseId]);
 
   const selectCourse = (
     courseId: string | null
@@ -971,55 +1007,6 @@ export const AppProvider: React.FC<{
       )
     );
   };
-
-  // ============================================================
-  // CLASS MODE STATUS NOTIFICATIONS
-  // ============================================================
-
-  const prevStatusRef =
-    useRef<ClassModeStatus>(
-      classModeStatus
-    );
-
-  useEffect(() => {
-    const prev =
-      prevStatusRef.current;
-
-    if (
-      prev !==
-      classModeStatus
-    ) {
-      if (
-        classModeStatus ===
-          'live' &&
-        prev !== 'live'
-      ) {
-        addToast(
-          'info',
-          'Class Mode Started Automatically',
-          `Class Mode is now LIVE for ${activeScheduleClass.courseCode} (${activeScheduleClass.section}). Continuous speech-to-text transcription active.`
-        );
-      } else if (
-        classModeStatus ===
-          'ended' &&
-        prev === 'live' &&
-        !manualOverrideStopped
-      ) {
-        addToast(
-          'warning',
-          'Class Session Ended',
-          `Your ${activeScheduleClass.courseCode} (${activeScheduleClass.section}) session has ended at ${activeScheduleClass.endTime}. Audio capture concluded.`
-        );
-      }
-
-      prevStatusRef.current =
-        classModeStatus;
-    }
-  }, [
-    classModeStatus,
-    activeScheduleClass,
-    manualOverrideStopped,
-  ]);
 
   const dismissUpcomingWarning =
     () => {
@@ -3503,6 +3490,8 @@ export const AppProvider: React.FC<{
         jumpSimulatedPreset,
 
         classModeStatus,
+        liveClassStatus: liveClass?.data ?? null,
+        liveClassError: liveClass?.error ?? '',
 
         upcomingWarningActive,
 

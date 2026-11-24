@@ -5,7 +5,7 @@ import queue
 import re
 import os
 from concurrent.futures import Future
-from pydantic import BaseModel
+from pydantic import BaseModel, PrivateAttr
 from typing import Optional, Any
 from pathlib import Path
 import asyncio
@@ -61,8 +61,23 @@ app.add_middleware(
 async def persist_workflow_audit(request: Request, call_next):
     """Persist workflow lifecycle events without relying on PostgreSQL."""
     started = datetime.now(timezone.utc)
-    response = await call_next(request)
     path = request.url.path
+    workflow_id = next((part for part in path.split("/") if part.startswith(("wf-", "awf-"))), None)
+    originating_workflow = (workflows.get(workflow_id) or assignment_workflows.get(workflow_id)) if workflow_id else None
+    source = originating_workflow.get("_class_mode") if originating_workflow else None
+    response = await call_next(request)
+    if source and request.method == "POST" and (
+        response.status_code < 400 or
+        (response.status_code >= 500 and originating_workflow["status"] == "failed")
+    ):
+        from . import class_mode_store
+
+        try:
+            snapshot = {key: make_json_safe(originating_workflow.get(key))
+                        for key in ("id", "status", "draft", "result", "error")}
+            await asyncio.to_thread(class_mode_store.record_workflow, source["suggestion_id"], snapshot)
+        except Exception:
+            traceback.print_exc()
     tracked = (
         "/api/workflows",
         "/api/assignment-workflows",
@@ -89,6 +104,8 @@ async def persist_workflow_audit(request: Request, call_next):
                         (datetime.now(timezone.utc) - started).total_seconds(), 3
                     ),
                 }
+                if source:
+                    details.update(class_session_id=source["session_id"], class_suggestion_id=source["suggestion_id"])
                 course = None
                 week = None
                 file_name = None
@@ -181,6 +198,8 @@ class PrepareWorkflowRequest(BaseModel):
     course: Optional[str] = None
     course_id: Optional[str] = None
     course_code: Optional[str] = None
+    _class_mode: Optional[dict] = PrivateAttr(default=None)
+    _parsed_override: Optional[dict] = PrivateAttr(default=None)
 
 
 class ApproveRequest(BaseModel):
@@ -2478,6 +2497,7 @@ async def auth_login(request: LoginRequest):
             password=password,
             name=result.get("name") or username,
         )
+        user_sessions[session_token]["courses"] = courses if isinstance(courses, list) else []
 
         return {
             "authenticated": True,
@@ -3006,7 +3026,8 @@ async def prepare_workflow(
     # ========================================================
 
     if (
-        is_assignment_instruction(
+        not request._class_mode
+        and is_assignment_instruction(
             instruction
         )
         and not is_lecture_instruction(
@@ -3093,6 +3114,8 @@ async def prepare_workflow(
     workflows[
         workflow_id
     ] = wf
+    if request._class_mode:
+        wf["_class_mode"] = request._class_mode
 
     try:
 
@@ -3123,9 +3146,7 @@ async def prepare_workflow(
             f"{instruction}"
         )
 
-        parsed = automation.parse_request(
-            instruction
-        )
+        parsed = request._parsed_override or automation.parse_request(instruction)
 
         selected_course = (
             request.course or request.course_code or ""
@@ -3305,9 +3326,7 @@ def prepare_moellim_workflow_sync(
             "Discovering course..."
         )
 
-        course = moodle.discover_course(
-            course_query
-        )
+        course = (wf.get("_class_mode") or {}).get("course_link") or moodle.discover_course(course_query)
 
         if not course:
 
@@ -3399,11 +3418,10 @@ def prepare_moellim_workflow_sync(
             "on this computer and Google Drive..."
         )
 
-        selector, file_path = select_course_lecture_file(
-            lecture,
-            course_query,
-            session,
-        )
+        if wf.get("_class_mode"):
+            _, file_path = select_combined_course_lecture_file(lecture, course_query, session, exact=True)
+        else:
+            _, file_path = select_course_lecture_file(lecture, course_query, session)
 
         if not file_path:
 
@@ -3696,6 +3714,9 @@ async def prepare_assignment_workflow(
     assignment_workflows[
         workflow_id
     ] = wf
+    if request._class_mode:
+        wf["_class_mode"] = request._class_mode
+        wf["_parsed_override"] = request._parsed_override
 
     try:
 
@@ -3726,7 +3747,7 @@ async def prepare_assignment_workflow(
             f"{instruction}"
         )
 
-        parsed = assignment_automation.parse_request(
+        parsed = request._parsed_override or assignment_automation.parse_request(
             instruction,
             selected_course=(
                 request.course
@@ -4251,6 +4272,7 @@ def prepare_assignment_workflow_sync(
                 selected_course=(
                     (wf.get("parsed") or {}).get("course")
                 ),
+                **({"parsed_request": wf["_parsed_override"]} if wf.get("_parsed_override") else {}),
             )
         )
 
@@ -4369,6 +4391,8 @@ def select_combined_course_lecture_file(
     lecture_name: str,
     course_name: str,
     session: dict[str, Any],
+    *,
+    exact: bool = False,
 ):
     """Strictly select a Combined lecture from its saved course folder only.
 
@@ -4405,6 +4429,10 @@ def select_combined_course_lecture_file(
 
     # This search is explicitly restricted to the saved course folder.
     candidates = automation.find_local_files(requested, folder=str(folder))
+    if exact:
+        root = folder.resolve()
+        candidates = [item for item in candidates if item["name"].casefold() == requested.casefold()
+                      and Path(item["path"]).resolve().is_relative_to(root)]
     ranked = []
     for candidate in candidates:
         rank = automation.match_rank(candidate.get("name", ""), requested)
@@ -5106,6 +5134,12 @@ async def reject_assignment_workflow(
 # LECTURE WORKFLOW - EXECUTE
 # ============================================================
 
+def check_class_publish_time(workflow):
+    not_before = (workflow.get("_class_mode") or {}).get("not_before")
+    if not_before and datetime.now(timezone.utc) < datetime.fromisoformat(not_before):
+        raise HTTPException(409, f"Available to publish from {not_before}.")
+
+
 @app.post(
     "/api/workflows/{workflow_id}/execute"
 )
@@ -5134,6 +5168,8 @@ async def execute_workflow(
                 "Teacher approval is required first."
             ),
         )
+
+    check_class_publish_time(wf)
 
     file_path = wf.get(
         "file_path"
@@ -5300,6 +5336,8 @@ async def execute_assignment_workflow(
                 "Teacher approval is required first."
             ),
         )
+
+    check_class_publish_time(wf)
 
     # ========================================================
     # LIVE AUTOMATION OBJECT
@@ -5601,9 +5639,7 @@ def execute_moellim_workflow_sync(
             f"{course_query}"
         )
 
-        course = moodle.discover_course(
-            course_query
-        )
+        course = (wf.get("_class_mode") or {}).get("course_link") or moodle.discover_course(course_query)
 
         if not course:
 

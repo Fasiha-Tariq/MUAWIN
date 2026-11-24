@@ -1,5 +1,5 @@
 ﻿import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import {
   ShieldCheck,
   Clock,
@@ -101,6 +101,7 @@ const getWorkflowDrafts = (workflow: WorkflowItem) => {
 
 export const Approvals: React.FC = () => {
   const navigate = useNavigate();
+  const { id: selectedWorkflowId } = useParams();
 
   const {
     user,
@@ -591,6 +592,7 @@ export const Approvals: React.FC = () => {
         <div className="space-y-4">
           {pendingWorkflows
             .filter((workflow) => workflow.status !== 'needs_clarification')
+            .sort((first, second) => Number(second.id === selectedWorkflowId) - Number(first.id === selectedWorkflowId))
             .map((workflow) => {
             const isCurrentlyExecuting =
               executingWorkflowId === workflow.id ||
@@ -603,6 +605,8 @@ export const Approvals: React.FC = () => {
               isCombined,
             } = getWorkflowDrafts(workflow);
             const backendDraft = asRecord(payload.backendDraft);
+            const publishFrom = asRecord(payload.backendParsed).class_publish_from;
+            const waitingForPublishTime = typeof publishFrom === 'string' && Date.parse(publishFrom) > Date.now();
 
             const lectureHeading = firstValue(
               lecture.heading,
@@ -1168,8 +1172,9 @@ export const Approvals: React.FC = () => {
                     <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
                       <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
                       <span>
-                        Authorization starts controlled browser
-                        automation on Moellim.
+                        {waitingForPublishTime
+                          ? 'Available to publish ' + new Date(publishFrom).toLocaleString()
+                          : 'Authorization starts controlled browser automation on Moellim.'}
                       </span>
                     </div>
 
@@ -1187,6 +1192,7 @@ export const Approvals: React.FC = () => {
                         onClick={() => handleAuthorize(workflow)}
                         disabled={
                           isCurrentlyExecuting ||
+                          waitingForPublishTime ||
                           workflow.status === 'needs_clarification'
                         }
                         className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-emerald-600 px-5 py-2.5 text-xs font-bold text-white shadow-xs transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto cursor-pointer"

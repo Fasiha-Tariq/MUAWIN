@@ -32,7 +32,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   mobileOpen,
   onCloseMobile
 }) => {
-  const { user, stats, demoMode, classModeStatus } = useApp();
+  const { user, stats, demoMode, liveClassStatus } = useApp();
 
   const mainNav = [
     { name: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
@@ -41,7 +41,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       name: 'Class Mode', 
       path: '/lecture', 
       icon: Mic2, 
-      badge: classModeStatus === 'live' ? 'LIVE' : classModeStatus === 'upcoming_warning' ? '5m' : 'Timetable' 
+      badge: liveClassStatus?.active ? 'LIVE' : liveClassStatus?.upcoming ? '5m' : 'Timetable'
     }
   ];
 

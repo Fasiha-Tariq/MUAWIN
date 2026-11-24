@@ -20,7 +20,6 @@ import { StatCard } from '../components/common/StatCard';
 import { CourseCard } from '../components/dashboard/CourseCard';
 import { PendingApprovalsMini } from '../components/dashboard/PendingApprovalsMini';
 import { RecentActivityList } from '../components/dashboard/RecentActivityList';
-import { ClassModeStatusCard } from '../components/dashboard/ClassModeStatusCard';
 
 import { Course } from '../types';
 import {
@@ -40,7 +39,10 @@ export const Dashboard: React.FC = () => {
     workflows,
     activityLogs,
     stats,
+    liveClassStatus,
   } = useApp();
+  const activeClass = liveClassStatus?.active;
+  const upcomingClass = liveClassStatus?.upcoming;
   console.log(
   '[DASHBOARD] courses:',
   courses
@@ -183,13 +185,29 @@ console.log(
               </div>
 
               <h3 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight break-words">
-                {selectedCourse.code} — {selectedCourse.title}
+                {selectedCourse.code && selectedCourse.code !== selectedCourse.title
+                  ? `${selectedCourse.code} — ${selectedCourse.title}`
+                  : selectedCourse.title}
               </h3>
+              {activeClass ? (
+                <p className="mt-1.5 flex items-center gap-1.5 text-xs font-semibold text-emerald-700">
+                  <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-500" aria-hidden="true" />
+                  {activeClass.course_id === selectedCourse.id ? 'Class active' : `Active class: ${activeClass.course}`}
+                </p>
+              ) : upcomingClass && (
+                <p className="mt-1.5 flex items-center gap-1.5 text-xs font-semibold text-blue-700">
+                  <Clock className="h-3.5 w-3.5 shrink-0" />
+                  Scheduled start {new Date(upcomingClass).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+                </p>
+              )}
             </div>
 
             <div className="flex flex-wrap items-center gap-2 shrink-0">
               <button
-                onClick={() => navigate('/lecture')}
+                onClick={() => {
+                  if (activeClass) selectCourse(activeClass.course_id);
+                  navigate('/lecture');
+                }}
                 className="px-3.5 py-2 text-xs font-bold bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 hover:text-slate-900 rounded-xl shadow-2xs transition-colors flex items-center gap-1.5 cursor-pointer"
               >
                 <Mic2 className="w-3.5 h-3.5 text-rose-500" />
@@ -214,15 +232,6 @@ console.log(
           </div>
         </div>
       )}
-
-      {/* =====================================================
-          AUTOMATIC SCHEDULED CLASS MODE
-      ====================================================== */}
-      <ClassModeStatusCard />
-
-      
-
-      
 
       {/* =====================================================
           ACADEMIC WORKFLOW METRICS

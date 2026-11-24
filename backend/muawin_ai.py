@@ -1822,6 +1822,9 @@ def install(server) -> None:
             week=(draft or {}).get("week_number"),
             teacher=session.get("username", ""),
         )
+        instructions = (wf.get("parsed") or {}).get("class_instructions")
+        if draft is not None and instructions:
+            draft["description"] = "\n\n".join(filter(None, [draft.get("description"), instructions]))
         return result
 
     server.prepare_assignment_workflow_sync = prepare_assignment

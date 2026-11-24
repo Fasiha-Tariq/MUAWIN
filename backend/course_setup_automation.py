@@ -1,4 +1,3 @@
-
 """
 Teacher-approved upload of course outline and timetable to Moellim General section.
 Uses the existing MoodleAutomation browser workflow.
@@ -9,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Dict
@@ -31,6 +31,20 @@ MAX_FILE_SIZE = 50 * 1024 * 1024
 
 # Jobs are held in memory for this running backend process.
 JOBS: Dict[str, Dict[str, Any]] = {}
+
+# Per-course locks prevent concurrent Playwright sessions from racing on the same course.
+_COURSE_LOCKS_GUARD = threading.Lock()
+_COURSE_LOCKS: Dict[str, threading.Lock] = {}
+
+
+def _get_course_lock(course_name: str) -> threading.Lock:
+    key = course_name.strip().casefold()
+    with _COURSE_LOCKS_GUARD:
+        lock = _COURSE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _COURSE_LOCKS[key] = lock
+        return lock
 
 
 def _get_teacher(server, authorization: str | None) -> dict:
@@ -150,70 +164,89 @@ def upload_course_outline(
     if not teacher_username or not teacher_password:
         return {"ok": False, "error": "Authenticated teacher credentials are unavailable."}
 
-    browser = None
-    context = None
+    with _get_course_lock(course_name):
+        browser = None
+        context = None
 
-    try:
-        with sync_playwright() as playwright:
-            browser, context = muawin_lecture.launch_browser(playwright)
-            page = context.new_page()
-            automation = muawin_lecture.MoodleAutomation(page)
+        try:
+            with sync_playwright() as playwright:
+                browser, context = muawin_lecture.launch_browser(playwright)
+                page = context.new_page()
+                automation = muawin_lecture.MoodleAutomation(page)
 
-            automation.login(
-                username=teacher_username,
-                password=teacher_password,
-            )
-
-            matched_course = automation.discover_course(course_name)
-            actual_name = str(matched_course.get("name", "")).strip()
-
-            if actual_name.casefold() != course_name.strip().casefold():
-                raise RuntimeError(
-                    f"Course safety check failed. Requested '{course_name}', "
-                    f"but Moellim matched '{actual_name}'."
+                automation.login(
+                    username=teacher_username,
+                    password=teacher_password,
                 )
 
-            automation.open_course(matched_course)
-            automation.ensure_edit_mode()
+                matched_course = automation.discover_course(course_name)
+                actual_name = str(matched_course.get("name", "")).strip()
 
-            upload = _upload_one(
-                automation,
-                page,
-                outline,
-                "Course Outline",
-                "Course outline uploaded by MUAWIN after teacher confirmation.",
-            )
+                if actual_name.casefold() != course_name.strip().casefold():
+                    raise RuntimeError(
+                        f"Course safety check failed. Requested '{course_name}', "
+                        f"but Moellim matched '{actual_name}'."
+                    )
 
+                automation.open_course(matched_course)
+                automation.ensure_edit_mode()
+
+                section_locator = page.locator("#section-0")
+                if not section_locator.count():
+                    raise RuntimeError("Moellim course General section (section-0) was not found.")
+
+                if "course outline" in section_locator.inner_text().casefold():
+                    return {
+                        "ok": True,
+                        "course": actual_name,
+                        "section": "General",
+                        "upload": {
+                            "resource": "Course Outline",
+                            "filename": outline.name,
+                            "status": "already_exists",
+                            "section": "General",
+                            "message": "Course Outline already exists in General; skipped duplicate.",
+                        },
+                        "message": "Course Outline already exists in General.",
+                    }
+
+                upload = _upload_one(
+                    automation,
+                    page,
+                    outline,
+                    "Course Outline",
+                    "Course outline uploaded by MUAWIN after teacher confirmation.",
+                )
+
+                return {
+                    "ok": True,
+                    "course": actual_name,
+                    "section": "General",
+                    "upload": upload,
+                    "message": "Course Outline uploaded and verified in General.",
+                }
+
+        except Exception as exc:
             return {
-                "ok": True,
-                "course": actual_name,
+                "ok": False,
+                "course": course_name,
                 "section": "General",
-                "upload": upload,
-                "message": "Course Outline uploaded and verified in General.",
+                "error": str(exc),
+                "message": "Course Outline upload failed. The upload was not verified.",
             }
 
-    except Exception as exc:
-        return {
-            "ok": False,
-            "course": course_name,
-            "section": "General",
-            "error": str(exc),
-            "message": "Course Outline upload failed. The upload was not verified.",
-        }
+        finally:
+            if context:
+                try:
+                    context.close()
+                except Exception:
+                    pass
 
-    finally:
-        if context:
-            try:
-                context.close()
-            except Exception:
-                pass
-
-        if browser:
-            try:
-                browser.close()
-            except Exception:
-                pass
-
+            if browser:
+                try:
+                    browser.close()
+                except Exception:
+                    pass
 
 
 def upload_class_schedule_document(
@@ -231,68 +264,88 @@ def upload_class_schedule_document(
     if not teacher_username or not teacher_password:
         return {"ok": False, "error": "Authenticated teacher credentials are unavailable."}
 
-    browser = None
-    context = None
+    with _get_course_lock(course_name):
+        browser = None
+        context = None
 
-    try:
-        with sync_playwright() as playwright:
-            browser, context = muawin_lecture.launch_browser(playwright)
-            page = context.new_page()
-            automation = muawin_lecture.MoodleAutomation(page)
+        try:
+            with sync_playwright() as playwright:
+                browser, context = muawin_lecture.launch_browser(playwright)
+                page = context.new_page()
+                automation = muawin_lecture.MoodleAutomation(page)
 
-            automation.login(
-                username=teacher_username,
-                password=teacher_password,
-            )
-
-            matched_course = automation.discover_course(course_name)
-            actual_name = str(matched_course.get("name", "")).strip()
-
-            if actual_name.casefold() != course_name.strip().casefold():
-                raise RuntimeError(
-                    f"Course safety check failed. Requested '{course_name}', "
-                    f"but Moellim matched '{actual_name}'."
+                automation.login(
+                    username=teacher_username,
+                    password=teacher_password,
                 )
 
-            automation.open_course(matched_course)
-            automation.ensure_edit_mode()
+                matched_course = automation.discover_course(course_name)
+                actual_name = str(matched_course.get("name", "")).strip()
 
-            upload = _upload_one(
-                automation,
-                page,
-                timetable,
-                "Class Schedule",
-                "Teacher-confirmed weekly class days and timings uploaded by MUAWIN.",
-            )
+                if actual_name.casefold() != course_name.strip().casefold():
+                    raise RuntimeError(
+                        f"Course safety check failed. Requested '{course_name}', "
+                        f"but Moellim matched '{actual_name}'."
+                    )
 
+                automation.open_course(matched_course)
+                automation.ensure_edit_mode()
+
+                section_locator = page.locator("#section-0")
+                if not section_locator.count():
+                    raise RuntimeError("Moellim course General section (section-0) was not found.")
+
+                if "class schedule" in section_locator.inner_text().casefold():
+                    return {
+                        "ok": True,
+                        "course": actual_name,
+                        "section": "General",
+                        "upload": {
+                            "resource": "Class Schedule",
+                            "filename": timetable.name,
+                            "status": "already_exists",
+                            "section": "General",
+                            "message": "Class Schedule already exists in General; skipped duplicate.",
+                        },
+                        "message": "Class Schedule already exists in General.",
+                    }
+
+                upload = _upload_one(
+                    automation,
+                    page,
+                    timetable,
+                    "Class Schedule",
+                    "Teacher-confirmed weekly class days and timings uploaded by MUAWIN.",
+                )
+
+                return {
+                    "ok": True,
+                    "course": actual_name,
+                    "section": "General",
+                    "upload": upload,
+                    "message": "Class Schedule uploaded and verified in General.",
+                }
+
+        except Exception as exc:
             return {
-                "ok": True,
-                "course": actual_name,
+                "ok": False,
+                "course": course_name,
                 "section": "General",
-                "upload": upload,
-                "message": "Class Schedule uploaded and verified in General.",
+                "error": str(exc),
+                "message": "Class Schedule upload failed; saved MUAWIN timings were retained.",
             }
 
-    except Exception as exc:
-        return {
-            "ok": False,
-            "course": course_name,
-            "section": "General",
-            "error": str(exc),
-            "message": "Class Schedule upload failed; saved MUAWIN timings were retained.",
-        }
-
-    finally:
-        if context:
-            try:
-                context.close()
-            except Exception:
-                pass
-        if browser:
-            try:
-                browser.close()
-            except Exception:
-                pass
+        finally:
+            if context:
+                try:
+                    context.close()
+                except Exception:
+                    pass
+            if browser:
+                try:
+                    browser.close()
+                except Exception:
+                    pass
 
 
 def upload_course_setup_documents(
@@ -311,85 +364,114 @@ def upload_course_setup_documents(
     if not teacher_username or not teacher_password:
         raise RuntimeError("Authenticated teacher credentials are unavailable.")
 
-    browser = None
-    context = None
-    results = []
+    with _get_course_lock(course_name):
+        browser = None
+        context = None
+        results = []
 
-    try:
-        with sync_playwright() as playwright:
-            # Use the same visible browser configuration as the lecture workflow.
-            browser, context = muawin_lecture.launch_browser(playwright)
-            page = context.new_page()
-            automation = muawin_lecture.MoodleAutomation(page)
+        try:
+            with sync_playwright() as playwright:
+                # Use the same visible browser configuration as the lecture workflow.
+                browser, context = muawin_lecture.launch_browser(playwright)
+                page = context.new_page()
+                automation = muawin_lecture.MoodleAutomation(page)
 
-            automation.login(
-                username=teacher_username,
-                password=teacher_password,
-            )
-
-            matched_course = automation.discover_course(course_name)
-            actual_name = str(matched_course.get("name", "")).strip()
-
-            # Do not allow fuzzy matching to silently upload into another course.
-            if actual_name.casefold() != course_name.strip().casefold():
-                raise RuntimeError(
-                    f"Course safety check failed. Requested '{course_name}', "
-                    f"but Moellim matched '{actual_name}'."
+                automation.login(
+                    username=teacher_username,
+                    password=teacher_password,
                 )
 
-            automation.open_course(matched_course)
-            automation.ensure_edit_mode()
+                matched_course = automation.discover_course(course_name)
+                actual_name = str(matched_course.get("name", "")).strip()
 
-            results.append(_upload_one(
-                automation,
-                page,
-                outline,
-                "Course Outline",
-                "Course outline uploaded by MUAWIN after teacher approval.",
-            ))
+                # Do not allow fuzzy matching to silently upload into another course.
+                if actual_name.casefold() != course_name.strip().casefold():
+                    raise RuntimeError(
+                        f"Course safety check failed. Requested '{course_name}', "
+                        f"but Moellim matched '{actual_name}'."
+                    )
 
-            results.append(_upload_one(
-                automation,
-                page,
-                timetable,
-                "Class Schedule",
-                "Teacher-confirmed weekly class days and timings uploaded by MUAWIN after approval.",
-            ))
+                automation.open_course(matched_course)
+                automation.ensure_edit_mode()
 
+                section_locator = page.locator("#section-0")
+                if not section_locator.count():
+                    raise RuntimeError("Moellim course General section (section-0) was not found.")
+
+                section_text = section_locator.inner_text().casefold()
+
+                # 1. Course Outline: skip duplicate instead of aborting so Class Schedule still uploads
+                if "course outline" in section_text:
+                    results.append({
+                        "resource": "Course Outline",
+                        "filename": outline.name,
+                        "status": "already_exists",
+                        "section": "General",
+                        "message": "Course Outline already exists in General; skipped duplicate.",
+                    })
+                else:
+                    results.append(_upload_one(
+                        automation,
+                        page,
+                        outline,
+                        "Course Outline",
+                        "Course outline uploaded by MUAWIN after teacher approval.",
+                    ))
+
+                # Refresh General section text before checking Class Schedule
+                section_text = page.locator("#section-0").inner_text().casefold()
+
+                # 2. Class Schedule
+                if "class schedule" in section_text:
+                    results.append({
+                        "resource": "Class Schedule",
+                        "filename": timetable.name,
+                        "status": "already_exists",
+                        "section": "General",
+                        "message": "Class Schedule already exists in General; skipped duplicate.",
+                    })
+                else:
+                    results.append(_upload_one(
+                        automation,
+                        page,
+                        timetable,
+                        "Class Schedule",
+                        "Teacher-confirmed weekly class days and timings uploaded by MUAWIN after approval.",
+                    ))
+
+                return {
+                    "ok": True,
+                    "course": actual_name,
+                    "section": "General",
+                    "uploads": results,
+                    "message": "Course setup documents verified in General.",
+                }
+
+        except Exception as exc:
             return {
-                "ok": True,
-                "course": actual_name,
+                "ok": False,
+                "course": course_name,
                 "section": "General",
                 "uploads": results,
-                "message": "Course Outline and Class Schedule were uploaded and verified in General.",
+                "error": str(exc),
+                "message": (
+                    "Upload did not fully complete. Check the upload results; "
+                    "a document may already have been uploaded."
+                ),
             }
 
-    except Exception as exc:
-        return {
-            "ok": False,
-            "course": course_name,
-            "section": "General",
-            "uploads": results,
-            "error": str(exc),
-            "message": (
-                "Upload did not fully complete. Check the upload results; "
-                "a document may already have been uploaded."
-            ),
-        }
+        finally:
+            if context:
+                try:
+                    context.close()
+                except Exception:
+                    pass
 
-    finally:
-        if context:
-            try:
-                context.close()
-            except Exception:
-                pass
-
-        if browser:
-            try:
-                browser.close()
-            except Exception:
-                pass
-
+            if browser:
+                try:
+                    browser.close()
+                except Exception:
+                    pass
 
 
 def verify_course_setup_documents(
@@ -478,7 +560,6 @@ def verify_course_setup_documents(
 
 def install(server) -> None:
     router = APIRouter()
-
 
     @router.post("/api/setup/moellim/prepare-saved")
     async def prepare_saved_documents(
@@ -722,7 +803,6 @@ def install(server) -> None:
             "message": job.get("message", ""),
             "error": job.get("error"),
         }
-
 
     @router.get("/api/setup/moellim/verify")
     async def verify_saved_documents(

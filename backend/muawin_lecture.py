@@ -150,7 +150,7 @@ def log_activity(entry):
     entry = {"time": datetime.now().isoformat(timespec="seconds"), **entry}
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    print(f"Ã¢Å“â€œ Activity logged: {LOG_FILE.name}")
+    print(f"✓ Activity logged: {LOG_FILE.name}")
 
 
 # ============================================================
@@ -254,6 +254,7 @@ def parse_request(request):
     }
 
 
+# ============================================================
 # MATERIAL SELECTION
 # ============================================================
 
@@ -517,13 +518,12 @@ class MaterialSelector:
     # --------------------------------------------------------
     # AUTOMATIC: find the file from the request itself
     # --------------------------------------------------------
-    
     def auto_select(self, lecture_name, local_folder=None, drive_folder_id=None):
         if not local_folder:
             raise RuntimeError("No course-specific lecture folder is saved. Select and save it in Course Setup first.")
         if drive_folder_id:
             raise RuntimeError("Course-specific Google Drive folder selection is not yet configured.")
-        print(f'`nSearching "{lecture_name}" only in the selected course folder...')
+        print(f'\nSearching "{lecture_name}" only in the selected course folder...')
         candidates = find_local_files(lecture_name, folder=local_folder)
         print("Searching only the selected local course folder.")
 
@@ -593,7 +593,7 @@ class MaterialSelector:
             return item["path"]
         try:
             path = download_drive_file(self.service, item)
-            print(f"Ã¢Å“â€œ Downloaded from Google Drive: {path.name}")
+            print(f"✓ Downloaded from Google Drive: {path.name}")
             return path
         except Exception as e:
             print(f"! Google Drive download failed: {e}")
@@ -649,8 +649,8 @@ class MaterialSelector:
     # --------------------------------------------------------
     def select_from_computer(self):
         print()
-        print("Ã¢Å“â€œ My Computer selected.")
-        print("Ã¢Å“â€œ Opening Windows file picker...")
+        print("✓ My Computer selected.")
+        print("✓ Opening Windows file picker...")
 
         if sys.platform != "win32":
             raise RuntimeError("My Computer file picker requires Windows.")
@@ -714,7 +714,7 @@ finally {
         if file_path.suffix.lower() not in ALLOWED_EXTENSIONS:
             raise RuntimeError(f"Unsupported file type: {file_path.suffix}")
 
-        print(f"Ã¢Å“â€œ Material selected: {file_path.name}")
+        print(f"✓ Material selected: {file_path.name}")
         return file_path
 
     # --------------------------------------------------------
@@ -722,7 +722,7 @@ finally {
     # --------------------------------------------------------
     def select_from_google_drive(self):
         print()
-        print("Ã¢Å“â€œ Google Drive selected.")
+        print("✓ Google Drive selected.")
 
         credentials_file = BASE_DIR / "credentials.json"
         token_file = BASE_DIR / "token.json"
@@ -836,7 +836,7 @@ finally {
                 _, done = downloader.next_chunk()
             output_path = TEMP_DIR / Path(selected["name"]).name
             output_path.write_bytes(buffer.getvalue())
-            print(f"Ã¢Å“â€œ Material selected: {output_path.name}")
+            print(f"✓ Material selected: {output_path.name}")
             return output_path
         except Exception as e:
             print(f"! Google Drive download failed: {e}")
@@ -871,7 +871,7 @@ def teacher_review(draft):
         print("TEACHER REVIEW - please verify")
         divider()
         if draft.get("note"):
-            print(f"Ã¢Å¡Â  {draft['note']}")
+            print(f"⚠ {draft['note']}")
         if draft.get("course"):
             print(f"Course      : {draft['course']}")
             print(f"Week        : {draft['week']}")
@@ -1154,7 +1154,7 @@ class MoodleAutomation:
                 pause(1)
                 result = self.match_course(requested)
                 if result:
-                    print(f"Ã¢Å“â€œ Course found: {result['name']}")
+                    print(f"✓ Course found: {result['name']}")
                     return result
             except Exception:
                 pass
@@ -1165,7 +1165,7 @@ class MoodleAutomation:
         print("\n[3] Opening live course...")
         self.page.goto(course["href"], wait_until="domcontentloaded")
         pause(2)
-        print(f"Ã¢Å“â€œ Course opened: {self.page.title()}")
+        print(f"✓ Course opened: {self.page.title()}")
 
     # ========================================================
     # EDIT MODE  (new UI: "Edit mode" toggle in top bar)
@@ -1191,7 +1191,7 @@ class MoodleAutomation:
         print("\n[4] Ensuring Edit mode is ON...")
 
         if self.edit_mode_on():
-            print("Ã¢Å“â€œ Edit mode is already ON.")
+            print("✓ Edit mode is already ON.")
             return
 
         switch = self.page.locator('input[name="setmode"]')
@@ -1213,7 +1213,7 @@ class MoodleAutomation:
                 raise RuntimeError("Edit mode ON nahi ho saka.")
 
         self.settle()
-        print("Ã¢Å“â€œ Edit mode turned ON.")
+        print("✓ Edit mode turned ON.")
 
     # ========================================================
     # SECTIONS / WEEKS
@@ -1252,7 +1252,7 @@ class MoodleAutomation:
         sections = self.discover_sections()
         if show:
             weekly = [s for s in sections if s["section_number"] > 0]
-            print(f"Ã¢Å“â€œ Date-based sections found: {len(weekly)}")
+            print(f"✓ Date-based sections found: {len(weekly)}")
             for s in weekly:
                 print(f"    Week {s['section_number']}: {s['date_range']}")
         for s in sections:
@@ -1265,7 +1265,7 @@ class MoodleAutomation:
         section = self.find_week(week_number, show=True)
 
         if section:
-            print(f"Ã¢Å“â€œ Week {week_number} found: {section['date_range']}")
+            print(f"✓ Week {week_number} found: {section['date_range']}")
             self.page.locator(f"#{section['section_id']}").scroll_into_view_if_needed()
             pause(1)
             return section
@@ -1276,11 +1276,12 @@ class MoodleAutomation:
 
     def add_week_until_found(self, week_number):
         print(f"\n[ADD WEEK] Creating missing Week {week_number}...")
+        self.ensure_edit_mode()
 
         for _ in range(30):
             current = self.find_week(week_number)
             if current:
-                print(f"Ã¢Å“â€œ Week {week_number} ready: {current['date_range']}")
+                print(f"✓ Week {week_number} ready: {current['date_range']}")
                 return current
 
             add_week = first_visible(
@@ -1300,15 +1301,32 @@ class MoodleAutomation:
     # ========================================================
     def open_activity_chooser(self, section):
         print("      Opening 'Activity or resource'...")
+        self.ensure_edit_mode()
+
         section_locator = self.page.locator(f"#{section['section_id']}")
         if section_locator.count() == 0:
             raise RuntimeError(f"{section['section_id']} DOM mein nahi mila.")
         section_locator.scroll_into_view_if_needed()
         pause(0.5)
 
+        # Expand the section if it is collapsed
+        collapse_toggle = section_locator.locator(
+            '[data-toggle="collapse"][aria-expanded="false"], '
+            '[data-bs-toggle="collapse"][aria-expanded="false"], '
+            'a.icons-collapse-expand.collapsed'
+        )
+        if collapse_toggle.count() > 0:
+            try:
+                collapse_toggle.first.click()
+                pause(0.8)
+            except Exception:
+                pass
+
         # 1) "+" button of this section (last one = end of the section)
         plus = None
-        buttons = section_locator.locator('button[data-action="open-addingcontent"]')
+        buttons = section_locator.locator(
+            'button[data-action="open-addingcontent"], a[data-action="open-addingcontent"]'
+        )
         for i in reversed(range(buttons.count())):
             try:
                 if buttons.nth(i).is_visible():
@@ -1316,24 +1334,36 @@ class MoodleAutomation:
                     break
             except Exception:
                 pass
-        if not plus:
-            raise RuntimeError("Section ka '+' (Add content) button nahi mila.")
-        plus.scroll_into_view_if_needed()
-        plus.click()
-        pause(0.7)
-        print("      Ã¢Å“â€œ '+' clicked.")
 
-        # 2) "Activity or resource" item of the dropdown that just opened
-        chooser = wait_visible(
-            lambda: section_locator.locator(
-                'button[data-action="open-chooser"]'
-            ),
-            seconds=8,
-        )
-        if not chooser:
-            raise RuntimeError("'Activity or resource' option nahi dikha.")
-        chooser.click()
-        print("      Ã¢Å“â€œ 'Activity or resource' clicked.")
+        if plus:
+            plus.scroll_into_view_if_needed()
+            plus.click()
+            pause(0.7)
+            print("      ✓ '+' clicked.")
+
+            # 2) "Activity or resource" item of the dropdown that just opened
+            chooser = wait_visible(
+                lambda: section_locator.locator(
+                    'button[data-action="open-chooser"], a[data-action="open-chooser"]'
+                ),
+                seconds=8,
+            )
+            if not chooser:
+                raise RuntimeError("'Activity or resource' option nahi dikha.")
+            chooser.click()
+            print("      ✓ 'Activity or resource' clicked.")
+        else:
+            # Fallback: direct "Add an activity or resource" button without "+" menu
+            direct_chooser = first_visible(
+                section_locator.locator(
+                    'button[data-action="open-chooser"], a[data-action="open-chooser"]'
+                )
+            )
+            if not direct_chooser:
+                raise RuntimeError("Section ka '+' (Add content) button nahi mila.")
+            direct_chooser.scroll_into_view_if_needed()
+            direct_chooser.click()
+            print("      ✓ Direct 'Activity or resource' clicked.")
 
         # 3) wait for the "Add an activity or resource" popup
         option = wait_visible(
@@ -1342,9 +1372,7 @@ class MoodleAutomation:
         )
         if not option:
             raise RuntimeError("Activity/resource popup open nahi hua.")
-        print("      Ã¢Å“â€œ Activity/resource popup opened.")
-
-    
+        print("      ✓ Activity/resource popup opened.")
 
     def select_resource_type(self, title, label):
         """Select a Moodle resource and detect either direct or chooser form."""
@@ -1434,7 +1462,6 @@ class MoodleAutomation:
     def select_file_resource(self):
         self.select_resource_type("Add a new File", "File")
 
-
     # ========================================================
     # UPLOAD  ("Add..." -> File picker -> Upload a file)
     # ========================================================
@@ -1456,7 +1483,7 @@ class MoodleAutomation:
         add_btn.scroll_into_view_if_needed()
         pause(0.5)
         add_btn.click()
-        print("      Ã¢Å“â€œ File picker opened.")
+        print("      ✓ File picker opened.")
 
         # 2) "Upload a file" in the picker's left menu
         repo = wait_visible(
@@ -1475,7 +1502,7 @@ class MoodleAutomation:
         if file_input.count() == 0:
             raise RuntimeError("Upload file input nahi mila.")
         file_input.first.set_input_files(str(file_path))
-        print(f"      Ã¢Å“â€œ File chosen: {file_path.name}")
+        print(f"      ✓ File chosen: {file_path.name}")
 
         # 4) "Upload this file"
         upload_btn = first_visible(self.page.locator("button.fp-upload-btn"))
@@ -1489,7 +1516,7 @@ class MoodleAutomation:
         except PlaywrightTimeoutError:
             raise RuntimeError("File upload complete nahi hui.")
         pause(1)
-        print("      Ã¢Å“â€œ File uploaded.")
+        print("      ✓ File uploaded.")
 
     # ========================================================
     # NAME + DESCRIPTION + DISPLAY DESCRIPTION
@@ -1529,17 +1556,17 @@ class MoodleAutomation:
         print("\n[SETTINGS] Filling File settings...")
 
         self.page.locator("#id_name").fill(draft["heading"])
-        print("      Ã¢Å“â€œ Name filled.")
+        print("      ✓ Name filled.")
 
         self.fill_description(draft["description"], draft["key_points"])
-        print("      Ã¢Å“â€œ Description filled.")
+        print("      ✓ Description filled.")
 
         # NOTE: there is also a hidden input with the same name, so use the id.
         checkbox = self.page.locator("#id_showdescription")
         checkbox.scroll_into_view_if_needed()
         if not checkbox.is_checked():
             checkbox.check()
-        print("      Ã¢Å“â€œ 'Display description on course page' checked.")
+        print("      ✓ 'Display description on course page' checked.")
 
     # ========================================================
     # SAVE
@@ -1555,7 +1582,7 @@ class MoodleAutomation:
                 "Save nahi hua (form mein koi required field/validation error ho sakta hai)."
             )
         self.settle(extra=2)
-        print("      Ã¢Å“â€œ Resource saved.")
+        print("      ✓ Resource saved.")
 
     # ========================================================
     # VERIFY
@@ -1585,7 +1612,7 @@ class MoodleAutomation:
         # Strict: the new resource must have ADDED a new appearance of its name.
         # (Old items with the same name/file cannot cause a false "verified".)
         if count_after > count_before:
-            print("\nÃ¢Å“â€œ VERIFIED IN SAME SECTION")
+            print("\n✓ VERIFIED IN SAME SECTION")
             print(f"  Week     : {week_number}")
             print(f"  Section  : {section['date_range']}")
             print(f"  Resource : {expected_name}")
@@ -1599,15 +1626,13 @@ class MoodleAutomation:
     # ========================================================
     # FULL UPLOAD WORKFLOW
     # ========================================================
-    
-    
-    
     def upload_approved_lecture(self, week_number, file_path, draft):
         """Upload a lecture only when its heading is not already present."""
 
         # Refresh the course page after teacher approval.
         self.page.reload(wait_until="domcontentloaded")
         pause(2)
+        self.ensure_edit_mode()
 
         section = self.find_week(week_number)
         if not section:
@@ -1640,18 +1665,20 @@ class MoodleAutomation:
             expected_file=file_path.name,
             count_before=count_before,
         )
+
+
 # ============================================================
 # MAIN
 # ============================================================
 def launch_browser(p):
-    """Shared by all workflows. Visible browser opens maximized."""
-    if HEADLESS:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(viewport={"width": 1440, "height": 900})
-    else:
-        # fits the teacher's own screen (no fixed size that can overflow it)
-        browser = p.chromium.launch(headless=False, args=["--start-maximized"])
-        context = browser.new_context(no_viewport=True)
+    # Defaults to headless=True unless MUAWIN_HEADLESS=false is set
+    headless = os.getenv("MUAWIN_HEADLESS", "true").lower() != "false"
+
+    browser = p.chromium.launch(
+        headless=headless,
+        args=["--no-sandbox", "--disable-dev-shm-usage"],
+    )
+    context = browser.new_context()
     return browser, context
 
 
@@ -1713,7 +1740,6 @@ def verify_course_lecture_records(course_name, uploads):
             browser.close()
 
     return results
-
 
 
 def scan_live_course_lecture_weeks(course_name):
@@ -1799,8 +1825,6 @@ def scan_live_course_lecture_weeks(course_name):
     }
 
 
-
-
 def main():
     print()
     print("=" * 70)
@@ -1846,8 +1870,8 @@ def main():
             moodle.login()
 
             course = moodle.discover_course(parsed["course"])
-            print(f"\nÃ¢Å“â€œ Matched course: {course['name']}")
-            print(f"Ã¢Å“â€œ Live course URL: {course['href']}")
+            print(f"\n✓ Matched course: {course['name']}")
+            print(f"✓ Live course URL: {course['href']}")
             log["course_matched"] = course["name"]
 
             moodle.open_course(course)
@@ -1905,7 +1929,7 @@ def main():
                 log["status"] = "rejected"
                 log_activity(log)
                 return
-            print("\nÃ¢Å“â€œ Teacher approved lecture.")
+            print("\n✓ Teacher approved lecture.")
 
             # ---------------- UPLOAD ----------------
             print("\n[8] Starting approved Moodle upload...")
@@ -1921,7 +1945,7 @@ def main():
                 print(f"Week    : {parsed['week']}")
                 print(f"Lecture : {draft['heading']}")
                 print(f"File    : {file_path.name}")
-                print("\nÃ¢Å“â€œ Uploaded\nÃ¢Å“â€œ Saved\nÃ¢Å“â€œ Verified in SAME Week")
+                print("\n✓ Uploaded\n✓ Saved\n✓ Verified in SAME Week")
                 log["heading"] = draft["heading"]
                 log["status"] = "success"
                 log_activity(log)
@@ -1952,6 +1976,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-

@@ -4,3 +4,4 @@
 node_modules/
 venv/
 .venv/
+backend/data/class_mode.sqlite3*

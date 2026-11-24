@@ -35,6 +35,7 @@ import { IntentCard } from '../components/assistant/IntentCard';
 
 import { WorkflowItem } from '../types';
 import { fileAssignmentService } from '../services/fileAssignmentService';
+import { encodePcm } from '../services/pcmAudio';
 
 export const Assistant: React.FC = () => {
   const navigate = useNavigate();
@@ -514,49 +515,12 @@ export const Assistant: React.FC = () => {
           return;
         }
 
-        const input = event.inputBuffer.getChannelData(0);
-        const inputRate = audioContext.sampleRate;
-        const targetRate = 16000;
-        const ratio = inputRate / targetRate;
-        const outputLength = Math.floor(input.length / ratio);
-
-        if (outputLength <= 0) return;
-
-        // Downsample browser audio to the 16 kHz PCM format expected by the backend.
-        const pcmBuffer = new ArrayBuffer(outputLength * 2);
-        const view = new DataView(pcmBuffer);
-
-        for (let i = 0; i < outputLength; i++) {
-          const start = Math.floor(i * ratio);
-          const end = Math.min(input.length, Math.floor((i + 1) * ratio));
-
-          let total = 0;
-          let count = 0;
-
-          for (let j = start; j < end; j++) {
-            total += input[j];
-            count++;
-          }
-
-          const sample = count ? total / count : input[start] || 0;
-          const clamped = Math.max(-1, Math.min(1, sample));
-          const int16 = clamped < 0 ? clamped * 32768 : clamped * 32767;
-
-          view.setInt16(i * 2, int16, true);
-        }
-
-        // Convert PCM bytes to base64 for the existing WebSocket protocol.
-        const bytes = new Uint8Array(pcmBuffer);
-        let binary = '';
-
-        for (let i = 0; i < bytes.length; i++) {
-          binary += String.fromCharCode(bytes[i]);
-        }
+        const data = encodePcm(event.inputBuffer.getChannelData(0), audioContext.sampleRate);
 
         activeSocket.send(
           JSON.stringify({
             type: 'audio',
-            data: btoa(binary),
+            data,
           })
         );
       };
@@ -1361,11 +1325,11 @@ export const Assistant: React.FC = () => {
                 </span>
               </div>
 
-              <h3 className="text-base font-bold text-slate-900 mt-0.5">
-                {selectedCourse
-                  ? `${selectedCourse.code} - ${selectedCourse.title}`
-                  : 'No Course Selected'}
-              </h3>
+                <h3 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight break-words">
+                  {selectedCourse?.code && selectedCourse.code !== selectedCourse.title
+                    ? `${selectedCourse.code} — ${selectedCourse.title}`
+                    : selectedCourse?.title || 'No Course Selected'}
+                </h3>
             </div>
           </div>
         </div>

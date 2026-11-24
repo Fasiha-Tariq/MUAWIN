@@ -5,6 +5,7 @@ import base64
 from contextlib import suppress
 from pathlib import Path
 from typing import Optional
+from uuid import uuid4
 
 import websockets
 from dotenv import load_dotenv
@@ -32,11 +33,6 @@ SESSION_ROTATION_SECONDS = float(
 if SESSION_ROTATION_SECONDS <= 0:
     SESSION_ROTATION_SECONDS = 480
 
-if not API_KEY:
-    raise RuntimeError(
-        "GEMINI_API_KEY is missing from backend/.env"
-    )
-
 # =========================================================
 # GEMINI LIVE WEBSOCKET
 # =========================================================
@@ -58,7 +54,7 @@ router = APIRouter(tags=["Live Transcription"])
 @router.get("/api/transcription/health")
 async def health():
     return {
-        "status": "ok",
+        "status": "ok" if API_KEY else "unconfigured",
         "service": "muawin-standalone-live-transcription",
         "model": MODEL,
     }
@@ -147,6 +143,11 @@ class GeminiLiveSession:
                         "Software Engineering",
                         "Playwright",
                     ],
+                },
+                "realtimeInputConfig": {
+                    "automaticActivityDetection": {
+                        "silenceDurationMs": 650,
+                    }
                 },
 
                 "sessionResumption": (
@@ -279,6 +280,7 @@ async def receive_client_audio(
     client_websocket: WebSocket,
     audio_queue: asyncio.Queue,
     stop_event: asyncio.Event,
+    resume_state=None,
 ):
     """
     Receives audio messages from the browser.
@@ -315,10 +317,24 @@ async def receive_client_audio(
 
                 audio_data = payload.get("data")
 
-                if audio_data:
-                    await audio_queue.put(
-                        audio_data
-                    )
+                if resume_state is None:
+                    if audio_data:
+                        await audio_queue.put(audio_data)
+                    continue
+
+                if not isinstance(audio_data, str) or not 0 < len(audio_data) <= 32768:
+                    await client_websocket.send_json({"type": "error", "message": "Invalid audio frame."})
+                    continue
+                capture = payload.get("capture")
+                sequence = payload.get("sequence")
+                if not isinstance(capture, str) or len(capture) != 36 or type(sequence) is not int or sequence < 1:
+                    continue
+                if capture != resume_state.get("capture"):
+                    resume_state.update(capture=capture, accepted=0)
+                if sequence > resume_state["accepted"]:
+                    await audio_queue.put(audio_data)
+                    resume_state["accepted"] = sequence
+                await client_websocket.send_json({"type": "audio_ack", "sequence": sequence})
 
             # -------------------------------------------------
             # STOP
@@ -328,6 +344,11 @@ async def receive_client_audio(
 
                 stop_event.set()
 
+                return
+
+            elif message_type == "finish":
+                await audio_queue.put(None)
+                await stop_event.wait()
                 return
 
             # -------------------------------------------------
@@ -364,6 +385,8 @@ async def send_audio_to_gemini(
     gemini_session: GeminiLiveSession,
     audio_queue: asyncio.Queue,
     stop_event: asyncio.Event,
+    pending_audio: list,
+    finishing: asyncio.Event,
 ):
     """
     Sends queued browser audio to Gemini.
@@ -374,26 +397,19 @@ async def send_audio_to_gemini(
 
     while not stop_event.is_set():
 
-        audio_data = await audio_queue.get()
-
-        if audio_data is None:
+        if not pending_audio:
+            pending_audio.append(await audio_queue.get())
+        if pending_audio[0] is None:
+            await gemini_session.send_audio_end()
+            pending_audio.clear()
+            finishing.set()
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=4)
+            except asyncio.TimeoutError:
+                stop_event.set()
             return
-
-        try:
-
-            await gemini_session.send_audio(
-                audio_data
-            )
-
-        except Exception:
-
-            # Put audio back into the queue so the
-            # next Gemini connection can retry it.
-            await audio_queue.put(
-                audio_data
-            )
-
-            raise
+        await gemini_session.send_audio(pending_audio[0])
+        pending_audio.clear()
 
 
 # =========================================================
@@ -404,6 +420,8 @@ async def receive_from_gemini(
     client_websocket: WebSocket,
     gemini_session: GeminiLiveSession,
     stop_event: asyncio.Event,
+    on_final=None,
+    finishing=None,
 ):
     """
     Receives Gemini Live messages and forwards
@@ -424,11 +442,6 @@ async def receive_from_gemini(
 
         if resumption_update:
 
-            print(
-                "[GEMINI] Session resumption update:",
-                resumption_update,
-            )
-
             resumable = resumption_update.get(
                 "resumable",
                 False,
@@ -439,15 +452,7 @@ async def receive_from_gemini(
             )
 
             if resumable and new_handle:
-
-                gemini_session.resumption_handle = (
-                    new_handle
-                )
-
-                print(
-                    "[GEMINI] Updated session "
-                    "resumption handle."
-                )
+                gemini_session.resumption_handle = new_handle
 
         # -------------------------------------------------
         # GO AWAY
@@ -522,14 +527,11 @@ async def receive_from_gemini(
             )
 
             if text:
+                event = {"type": "transcript", "text": text, "final": True}
+                if on_final:
+                    event.update(await on_final(text))
 
-                await client_websocket.send_json(
-                    {
-                        "type": "transcript",
-                        "text": text,
-                        "final": True,
-                    }
-                )
+                await client_websocket.send_json(event)
 
         # -------------------------------------------------
         # TURN COMPLETE
@@ -544,6 +546,9 @@ async def receive_from_gemini(
                     "type": "turn_complete"
                 }
             )
+            if finishing and finishing.is_set():
+                stop_event.set()
+                return "stopped"
 
     return "closed"
 
@@ -576,6 +581,10 @@ async def wait_for_session_rotation(
 
 async def handle_transcription(
     client_websocket: WebSocket,
+    *,
+    on_final=None,
+    stop_event=None,
+    resume_state=None,
 ):
     """
     Maintains one browser transcription connection while
@@ -586,13 +595,30 @@ async def handle_transcription(
     # SHARED STATE
     # -----------------------------------------------------
 
-    audio_queue = asyncio.Queue()
+    if not API_KEY:
+        await client_websocket.send_json({"type": "error", "message": "Gemini Live is not configured."})
+        await client_websocket.close(code=1011)
+        return
 
-    stop_event = asyncio.Event()
-
-    resumption_handle = None
+    state = resume_state if resume_state is not None else {}
+    audio_queue = state.setdefault("queue", asyncio.Queue(maxsize=512))
+    pending_audio = state.setdefault("pending", [])
+    pending_finals = state.setdefault("finals", [])
+    stop_event = stop_event or asyncio.Event()
+    resumption_handle = state.get("handle")
+    retry_delay = 1
 
     client_reader = None
+
+    async def save_final(text=None):
+        if text is not None:
+            pending_finals.append((uuid4().hex, text))
+        metadata = {}
+        while pending_finals:
+            event_id, original = pending_finals[0]
+            metadata = await on_final(original, event_id)
+            pending_finals.pop(0)
+        return metadata
 
     try:
 
@@ -605,6 +631,7 @@ async def handle_transcription(
                 client_websocket,
                 audio_queue,
                 stop_event,
+                resume_state,
             )
         )
 
@@ -621,6 +648,7 @@ async def handle_transcription(
             sender = None
             receiver = None
             rotation_timer = None
+            finishing = asyncio.Event()
 
             try:
 
@@ -628,7 +656,10 @@ async def handle_transcription(
                 # CONNECT / RESUME
                 # -----------------------------------------
 
+                if pending_finals:
+                    await save_final()
                 await gemini_session.connect()
+                retry_delay = 1
 
                 await client_websocket.send_json(
                     {
@@ -651,6 +682,8 @@ async def handle_transcription(
                         gemini_session,
                         audio_queue,
                         stop_event,
+                        pending_audio,
+                        finishing,
                     )
                 )
 
@@ -659,6 +692,8 @@ async def handle_transcription(
                         client_websocket,
                         gemini_session,
                         stop_event,
+                        save_final if on_final else None,
+                        finishing,
                     )
                 )
 
@@ -687,6 +722,7 @@ async def handle_transcription(
                     resumption_handle = (
                         gemini_session.resumption_handle
                     )
+                    state["handle"] = resumption_handle
 
                 print(
                     "[GEMINI] Current resumption handle "
@@ -702,19 +738,14 @@ async def handle_transcription(
 
                     break
 
+                if sender in done:
+                    sender.result()
                 receiver_result = None
                 rotation_result = None
 
                 if receiver in done:
 
-                    with suppress(
-                        asyncio.CancelledError,
-                        Exception,
-                    ):
-
-                        receiver_result = (
-                            receiver.result()
-                        )
+                    receiver_result = receiver.result()
 
                 if rotation_timer in done:
 
@@ -785,16 +816,20 @@ async def handle_transcription(
             except Exception as error:
 
                 print(
-                    "[GEMINI] Connection error:",
-                    error,
+                    "[GEMINI] Connection error:", type(error).__name__,
                 )
 
-                await gemini_session.close()
+                if sender is None and resumption_handle:
+                    resumption_handle = None
+                    state.pop("handle", None)
 
                 if stop_event.is_set():
                     break
 
-                await asyncio.sleep(1)
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=retry_delay)
+                except asyncio.TimeoutError:
+                    retry_delay = min(retry_delay * 2, 15)
 
             finally:
 
@@ -809,7 +844,7 @@ async def handle_transcription(
                         task.cancel()
 
                         with suppress(
-                            asyncio.CancelledError
+                            asyncio.CancelledError, Exception
                         ):
 
                             await task
@@ -839,6 +874,9 @@ async def handle_transcription(
     finally:
 
         stop_event.set()
+        if pending_finals:
+            with suppress(Exception):
+                await save_final()
 
         # Stop the audio reader.
         if client_reader:

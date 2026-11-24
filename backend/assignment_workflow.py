@@ -1969,10 +1969,11 @@ class AssignmentAutomation:
         print(f"Optional grade/deadline verification completed ({stage}).")
 
     # ---------------- PDF attachment ----------------
-
     def attach_pdf(self, pdf_path) -> None:
         """Uploads the PDF/document into 'Additional files' of the assignment form."""
         pdf_path = Path(pdf_path).resolve()
+        if not pdf_path.is_file():
+            raise RuntimeError(f"Generated assignment PDF was not found on disk: {pdf_path}")
         name = pdf_path.name
         print(f"Attaching file: {name}")
         try:
@@ -1981,36 +1982,80 @@ class AssignmentAutomation:
             if fm.count() == 0:
                 raise RuntimeError("'Additional files' field was not found on the form.")
             fm.first.scroll_into_view_if_needed()
-            fm.locator(".fp-btn-add a, .fp-btn-add").first.click(timeout=10000)
+
+            # Wait for Moodle's filemanager JS toolbar to finish initializing
+            add_btn = fm.locator(".fp-btn-add a, .fp-btn-add, a[title='Add...']").first
+            add_btn.wait_for(state="visible", timeout=20000)
+            self.page.wait_for_timeout(400)
+            add_btn.click(timeout=10000)
 
             # Wait for the visible Moodle File Picker modal
-            dialog = self.page.locator(".moodle-dialogue-base[aria-hidden='false'] .file-picker, .file-picker:visible").last
-            dialog.wait_for(state="visible", timeout=10000)
+            dialog = self.page.locator(
+                ".moodle-dialogue-base[aria-hidden='false'] .file-picker, .file-picker:visible"
+            ).last
+            dialog.wait_for(state="visible", timeout=15000)
 
             # Ensure 'Upload a file' repository is selected and wait for its form to render
-            repo = dialog.locator(".fp-repo a:has-text('Upload a file')")
+            repo = dialog.locator(
+                ".fp-repo a:has-text('Upload a file'), span.fp-repo-name:has-text('Upload a file')"
+            )
             if repo.count() > 0:
                 repo.first.click(timeout=5000)
+                self.page.wait_for_timeout(600)
 
-            inp = dialog.locator("input[type='file'][name='repo_upload_file']:visible").first
-            inp.wait_for(state="visible", timeout=10000)
+            # Attach file directly to the Upload repository form's file input (even if styled/opacity:0)
+            upload_form = dialog.locator("form").filter(
+                has=self.page.locator("input[name='repo_upload_file']")
+            ).last
+            upload_form.wait_for(state="visible", timeout=10000)
+
+            inp = upload_form.locator("input[type='file'][name='repo_upload_file']").first
             inp.set_input_files(str(pdf_path))
+            inp.dispatch_event("change")
+            self.page.wait_for_timeout(400)
 
-            # Verify the browser actually attached the file to the input before clicking Upload
-            self.page.wait_for_function(
-                """(el) => el && el.files && el.files.length > 0""",
-                arg=inp.element_handle(),
-                timeout=5000,
-            )
+            # Verify the browser actually attached the file to the active form input
+            has_file = inp.evaluate("(el) => Boolean(el && el.files && el.files.length > 0)")
+            if not has_file:
+                raise RuntimeError(f"Browser did not attach '{pdf_path}' to Moodle's file input.")
 
-            upload_btn = dialog.locator(
+            upload_btn = upload_form.locator(
                 ".fp-upload-btn, button:has-text('Upload this file'), input[value='Upload this file']"
             ).first
+            if upload_btn.count() == 0:
+                upload_btn = dialog.locator(
+                    ".fp-upload-btn, button:has-text('Upload this file'), input[value='Upload this file']"
+                ).first
             upload_btn.wait_for(state="visible", timeout=5000)
             upload_btn.click(timeout=10000)
 
-            # Wait for modal to close and file thumbnail/name to appear in Additional files
-            fm.first.get_by_text(name).first.wait_for(state="visible", timeout=30000)
+            self.page.wait_for_timeout(1000)
+
+            # Check if Moodle raised an Error dialog (e.g., "No file was attached" / file too large)
+            err_dialog = self.page.locator(
+                ".moodle-dialogue-base[aria-hidden='false'] .moodle-dialogue-bd:has-text('No file'), "
+                ".moodle-dialogue-base[aria-hidden='false'] .moodle-dialogue-hd:has-text('Error')"
+            ).first
+            if err_dialog.count() > 0 and err_dialog.is_visible():
+                err_text = clean_text(
+                    self.page.locator(
+                        ".moodle-dialogue-base[aria-hidden='false'] .moodle-dialogue-bd"
+                    ).last.inner_text(timeout=2000)
+                )
+                raise RuntimeError(f"Moodle File Picker error: {err_text or 'No file was attached'}")
+
+            # Handle Moodle's "File exists" dialog if re-uploading the same filename
+            overwrite_btn = self.page.locator(
+                "button.fp-dlg-butoverwrite:visible, button:has-text('Overwrite'):visible"
+            ).first
+            if overwrite_btn.count() > 0:
+                overwrite_btn.click(timeout=5000)
+
+            # Wait for the uploaded file tile (.fp-file) inside Additional files
+            fm.locator(".filemanager .fp-file, .fp-file").first.wait_for(
+                state="visible", timeout=45000
+            )
+            self.page.wait_for_timeout(500)
         except Exception as exc:
             try:
                 shot = ROOT_DIR / "logs" / "assignment_upload_fail.png"
@@ -2022,7 +2067,6 @@ class AssignmentAutomation:
             raise RuntimeError(f"File upload to Moellim failed: {exc}\n"
                                "The assignment was NOT saved.")
         print(f"✓ File attached: {name}")
-
     def verify_attachment(self, pdf_path) -> None:
         name = Path(pdf_path).name
         fm = self.page.locator("#fitem_id_introattachments")
@@ -2289,16 +2333,18 @@ def prepare_assignment_request(
     page,
     instruction: str,
     selected_course: Optional[str] = None,
+    *,
+    parsed_request: Optional[Dict] = None,
 ) -> Dict:
     """
     Prepare an assignment for the MUAWIN API.
     """
-    parsed = parse_request(
+    parsed = dict(parsed_request) if parsed_request else parse_request(
         instruction,
         selected_course=selected_course,
     )
 
-    course_id = resolve_course_id(page, parsed["course"])
+    course_id = parsed.get("target_course_id") or resolve_course_id(page, parsed["course"])
 
     auto = AssignmentAutomation(page)
     auto.open_course(course_id)
