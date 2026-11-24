@@ -36,6 +36,7 @@ import { IntentCard } from '../components/assistant/IntentCard';
 import { WorkflowItem } from '../types';
 import { fileAssignmentService } from '../services/fileAssignmentService';
 import { encodePcm } from '../services/pcmAudio';
+import { getAuthToken, getWebSocketUrl } from '../services/api';
 
 export const Assistant: React.FC = () => {
   const navigate = useNavigate();
@@ -436,8 +437,7 @@ export const Assistant: React.FC = () => {
       }
 
       // Connect to the FastAPI transcription route.
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const socketUrl = `${protocol}//127.0.0.1:8000/ws/transcribe`;
+      const socketUrl = getWebSocketUrl('../ws/transcribe');
 
       socket = new WebSocket(socketUrl);
       transcriptionSocketRef.current = socket;
@@ -449,6 +449,8 @@ export const Assistant: React.FC = () => {
 
         socket!.onopen = () => {
           window.clearTimeout(timeout);
+          const token = getAuthToken();
+          if (token) socket!.send(JSON.stringify({ token }));
           resolve();
         };
 

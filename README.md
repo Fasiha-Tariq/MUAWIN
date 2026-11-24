@@ -29,3 +29,13 @@ npm run dev
 ```
 
 Sign in with your Moellim account. Set `GEMINI_API_KEY` in `backend/.env` to enable Gemini features.
+
+## Deploy the frontend on Vercel
+
+When importing this repository in Vercel, choose **Import single project** on the **frontend (Vite)** row. Use `frontend` as the root directory, `npm run build` as the build command, and `dist` as the output directory.
+
+For a working deployment, run `backend.server_ai:app` separately as a long-running HTTPS service with WebSocket support, Playwright Chromium, and persistent storage. The FastAPI process runs Class Mode's scheduler and holds live teacher sessions and workflows in memory. It also writes SQLite databases and course files to disk.
+
+- Set `VITE_API_BASE_URL=https://your-backend.example/api` in the Vercel project before deploying.
+- Set `MUAWIN_CORS_ORIGINS=https://your-frontend.vercel.app` on the backend. Use a comma-separated list if you have multiple frontend origins.
+- Keep `GEMINI_API_KEY` and any n8n credentials in the backend environment.

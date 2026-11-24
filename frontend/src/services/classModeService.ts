@@ -1,4 +1,4 @@
-import { api, API_BASE_URL, getAuthToken } from './api';
+import { api, getAuthToken, getWebSocketUrl } from './api';
 import { encodePcm } from './pcmAudio';
 
 export interface ClassSession {
@@ -95,8 +95,7 @@ export async function openClassMicrophone(
   }
   const token = getAuthToken();
   if (!token) throw new Error('Sign in to capture class audio.');
-  const endpoint = new URL(API_BASE_URL.replace(/\/$/, '') + sessionPath(sessionId) + '/audio', window.location.href);
-  endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:';
+  const endpoint = getWebSocketUrl(sessionPath(sessionId).slice(1) + '/audio');
   let stream: MediaStream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true } });

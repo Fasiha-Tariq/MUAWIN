@@ -10,10 +10,23 @@
  *   http://localhost:8000/api
  */
 
-export const API_BASE_URL =
-  (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_BASE_URL)
-    ? import.meta.env.VITE_API_BASE_URL
-    : 'http://localhost:8000/api';
+const configuredApiBase = import.meta.env?.VITE_API_BASE_URL?.trim();
+const API_BASE_URL = (configuredApiBase || 'http://localhost:8000/api').replace(/\/+$/, '');
+
+function requireApiBase() {
+  if (!configuredApiBase && !import.meta.env.DEV &&
+      !['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname)) {
+    throw new Error('The hosted MUAWIN backend is not configured. Set VITE_API_BASE_URL and redeploy.');
+  }
+  return API_BASE_URL;
+}
+
+export function getWebSocketUrl(path: string) {
+  const base = new URL(requireApiBase() + '/', window.location.href);
+  const endpoint = new URL(path, base);
+  endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:';
+  return endpoint;
+}
 
 export const USE_MOCK_API = false;
 
@@ -78,7 +91,7 @@ async function request<T>(
 ): Promise<ApiResponse<T>> {
   const { params, ...customConfig } = options;
 
-  let url = `${API_BASE_URL}${
+  let url = `${requireApiBase()}${
     endpoint.startsWith('/') ? endpoint : `/${endpoint}`
   }`;
 

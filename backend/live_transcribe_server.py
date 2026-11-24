@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import websockets
 from dotenv import load_dotenv
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
 
 # =========================================================
@@ -907,6 +907,15 @@ async def transcribe(
 ):
 
     await websocket.accept()
+    authorize = getattr(websocket.app.state, "authorize_transcription", None)
+    if authorize:
+        try:
+            credentials = await asyncio.wait_for(websocket.receive_json(), timeout=5)
+            authorize(credentials.get("token", ""))
+        except (HTTPException, ValueError, AttributeError, asyncio.TimeoutError, WebSocketDisconnect):
+            with suppress(RuntimeError):
+                await websocket.close(code=4401)
+            return
 
     print(
         "[STT] Browser connected."

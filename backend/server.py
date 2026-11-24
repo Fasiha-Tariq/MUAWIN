@@ -44,13 +44,18 @@ app.include_router(live_transcribe_router)
 # CORS
 # ============================================================
 
+hosted_origins = [origin.strip().rstrip("/") for origin in
+                  os.getenv("MUAWIN_CORS_ORIGINS", "").split(",") if origin.strip()]
+if hosted_origins:
+    app.state.authorize_transcription = lambda token: get_teacher_session(f"Bearer {token}")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         "http://172.19.224.1:3000"
-    ],
+    ] + hosted_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
