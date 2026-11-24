@@ -1,24 +1,31 @@
-"""Local SQLite audit trail; independent of the optional PostgreSQL database."""
+"""Teacher-scoped audit events using MUAWIN's configured database."""
 from __future__ import annotations
 import json
+from contextlib import contextmanager
 import os
-import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from . import storage_database
 
 BACKEND_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("MUAWIN_AUDIT_DB", str(BACKEND_DIR / "data" / "muawin_audit.sqlite3")))
-DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
+@contextmanager
 def _connect():
-    con = sqlite3.connect(DB_PATH, timeout=15)
-    con.row_factory = sqlite3.Row
-    return con
+    db = storage_database.connect(DB_PATH)
+    try:
+        with db:
+            yield db
+    finally:
+        db.close()
 
 
 def init_audit_db():
+    if storage_database.uses_postgres():
+        storage_database.verify_schema(os.environ["MUAWIN_DATABASE_URL"])
+        return
     with _connect() as con:
         con.execute("""CREATE TABLE IF NOT EXISTS audit_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -43,11 +50,11 @@ def record_event(*, teacher_username: str, action: str, status: str,
     with _connect() as con:
         cur = con.execute("""INSERT INTO audit_events
             (created_at, teacher_username, workflow_id, action, status, course, week, file_name, details)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id""",
             (datetime.now(timezone.utc).isoformat(), teacher_username, workflow_id,
              action, status, course, week, file_name,
              json.dumps(details or {}, ensure_ascii=False, default=str)))
-        return cur.lastrowid
+        return cur.fetchone()["id"]
 
 
 def list_events(teacher_username: str, limit: int = 200):

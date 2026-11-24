@@ -1,21 +1,16 @@
-"""
-MUAWIN feature database.
-Uses a local SQLite database for outlines, CLO mappings, upload history,
-course setup, timetable expectations, folder candidates, reminders and audit events.
-No PostgreSQL service is required for these MUAWIN AI features.
-"""
+"""Course management persistence using the configured MUAWIN PostgreSQL or local database."""
 from __future__ import annotations
 
 import json
 from contextlib import contextmanager
 import os
 import re
-import sqlite3
 import time
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from . import storage_database
 
 HERE = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("MUAWIN_SQLITE_PATH", str(HERE / "data" / "muawin.sqlite3")))
@@ -27,12 +22,7 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 def _connect():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH), timeout=15)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout=15000")
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+    return storage_database.connect(DB_PATH)
 
 @contextmanager
 def _db():
@@ -51,6 +41,9 @@ def course_key(course: Optional[str]) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
 
 def ensure_tables() -> bool:
+    if storage_database.uses_postgres():
+        storage_database.verify_schema(os.environ["MUAWIN_DATABASE_URL"])
+        return True
     schema = """
     CREATE TABLE IF NOT EXISTS ai_upload_history (
       id INTEGER PRIMARY KEY AUTOINCREMENT, teacher TEXT NOT NULL, course_key TEXT NOT NULL,
@@ -250,7 +243,7 @@ def ensure_tables() -> bool:
 
 def _ensure():
     if not ensure_tables():
-        raise RuntimeError("MUAWIN SQLite database could not be initialized.")
+        raise RuntimeError("MUAWIN database could not be initialized.")
 
 def record_event(teacher: str, event_type: str, status: str = "success",
                  course: str = "", details: Any = None) -> bool:
@@ -258,7 +251,7 @@ def record_event(teacher: str, event_type: str, status: str = "success",
         _ensure()
         payload = json.dumps(details, ensure_ascii=False, default=str) if not isinstance(details, str) else details
         with _db() as db:
-            columns = {r["name"] for r in db.execute("PRAGMA table_info(operation_events)").fetchall()}
+            columns = storage_database.columns(db, "operation_events")
             fields = {"teacher": teacher.strip(), "course": course,
                       "status": status, "details": payload,
                       "created_at": _now(), "event_type": event_type,
@@ -331,6 +324,8 @@ def save_clo_mapping(teacher: str, course: str, week: Optional[int], item_type: 
 
 
 def _ensure_setup_lifecycle_columns(db):
+    if storage_database.uses_postgres():
+        return
     columns = {row["name"] for row in db.execute("PRAGMA table_info(course_setup)")}
     for name, definition in (
         ("setup_completed", "INTEGER DEFAULT 0"),
@@ -500,11 +495,12 @@ def get_shared_course_outline(teacher: str, course: str) -> Optional[Dict[str, A
                 (teacher.strip(), ckey, course, _now()))
 
             db.execute("""
-                INSERT OR IGNORE INTO weekly_expectations
+                INSERT INTO weekly_expectations
                   (teacher, course_key, course, week, expected_topic, due_date, status, source, uploaded_at, notes)
                 SELECT ?, course_key, ?, week, expected_topic, due_date, status, source, uploaded_at, notes
                 FROM weekly_expectations
                 WHERE course_key=? AND teacher=?
+                ON CONFLICT DO NOTHING
             """, (teacher.strip(), course, ckey, row["teacher"]))
 
         _refresh_setup_completion(teacher, course)
@@ -559,9 +555,9 @@ def save_schedule(teacher: str, course: str, slots: List[Dict[str, Any]]) -> Opt
                 if isinstance(day,str):
                     names=["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]
                     day=names.index(day.lower()) if day.lower() in names else int(day)
-                db.execute("""INSERT OR IGNORE INTO ai_class_schedule
+                db.execute("""INSERT INTO ai_class_schedule
                   (teacher,course_key,course,weekday,start_time,end_time,auto_lecture,auto_assignment)
-                  VALUES(?,?,?,?,?,?,?,?)""",
+                  VALUES(?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
                   (teacher.strip(),key,course,int(day),_hhmm(slot.get("start_time") or slot.get("start")),
                    _hhmm(slot.get("end_time") or slot.get("end")),int(slot.get("auto_lecture",True)),
                    int(slot.get("auto_assignment",False))))
@@ -936,10 +932,11 @@ def create_missing_reminders(
                     continue
 
                 cur = db.execute("""
-                    INSERT OR IGNORE INTO reminders
+                    INSERT INTO reminders
                     (teacher,course_key,course,week,title,message,status,due_at,
                      created_at,updated_at,dedupe_key)
                     VALUES(?,?,?,?,?,?,'active',?,?,?,?)
+                    ON CONFLICT DO NOTHING
                 """, (
                     teacher.strip(), course_key(course), course, week,
                     title, message, row.get("due_date"), _now(), _now(), dedupe
@@ -985,9 +982,9 @@ def save_folder_candidate(teacher: str, course: str, file_path: str) -> Optional
         _ensure()
         p=Path(file_path)
         with _db() as db:
-            db.execute("""INSERT OR IGNORE INTO folder_candidates
+            db.execute("""INSERT INTO folder_candidates
               (teacher,course_key,course,file_path,file_name,size_bytes,modified_at,status,created_at)
-              VALUES(?,?,?,?,?,?,?,'pending',?)""",
+              VALUES(?,?,?,?,?,?,?,'pending',?) ON CONFLICT DO NOTHING""",
               (teacher.strip(),course_key(course),course,str(p),p.name,p.stat().st_size,
                datetime.fromtimestamp(p.stat().st_mtime,timezone.utc).isoformat(),_now()))
             row=db.execute("SELECT id FROM folder_candidates WHERE teacher=? AND course_key=? AND file_path=?",

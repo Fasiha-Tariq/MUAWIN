@@ -23,6 +23,7 @@ from . import muawin_lecture as automation
 from . import assignment_workflow as assignment_automation
 from . import muawin_combined as combined_automation
 from . import audit_store
+from . import storage_database
 from . import file_assignment as file_assignment_scanner
 from .file_assignment_validation import normalize_assignment_marks
 
@@ -2432,6 +2433,7 @@ async def health():
         "llm": "external / optional",
         "lecture_workflows": True,
         "assignment_workflows": True,
+        "storage_backend": "postgresql" if storage_database.uses_postgres() else "sqlite",
     }
 
 

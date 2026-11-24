@@ -2,12 +2,12 @@
 
 import json
 import os
-import sqlite3
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
+from . import storage_database
 
 
 DB_PATH = Path(os.getenv("MUAWIN_CLASS_MODE_DB", Path(__file__).parent / "data" / "class_mode.sqlite3"))
@@ -21,10 +21,7 @@ def now():
 
 @contextmanager
 def connection():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(DB_PATH, timeout=10)
-    db.row_factory = sqlite3.Row
-    db.execute("PRAGMA foreign_keys=ON")
+    db = storage_database.connect(DB_PATH)
     try:
         with db:
             yield db
@@ -33,6 +30,9 @@ def connection():
 
 
 def initialize():
+    if storage_database.uses_postgres():
+        storage_database.verify_schema(os.environ["MUAWIN_DATABASE_URL"])
+        return
     with connection() as db:
         db.executescript("""
         PRAGMA journal_mode=WAL;
@@ -130,12 +130,13 @@ def append_segment(session_id, text, event_id=None):
             if existing:
                 return dict(existing)
         row = db.execute(
-            "INSERT INTO class_segments(session_id, text, timestamp) VALUES (?, ?, ?)",
+            "INSERT INTO class_segments(session_id, text, timestamp) VALUES (?, ?, ?) RETURNING id",
             (session_id, text, timestamp),
         )
+        sequence = row.fetchone()["id"]
         if event_id:
-            db.execute("INSERT INTO class_segment_events VALUES (?, ?)", (event_id, row.lastrowid))
-        return {"sequence": row.lastrowid, "timestamp": timestamp}
+            db.execute("INSERT INTO class_segment_events VALUES (?, ?)", (event_id, sequence))
+        return {"sequence": sequence, "timestamp": timestamp}
 
 
 def seal_chunks():
@@ -212,12 +213,13 @@ def recover_processing():
 def claim_chunk():
     with connection() as db:
         db.execute("BEGIN IMMEDIATE")
-        row = db.execute("""
+        order = "created_order" if storage_database.uses_postgres() else "rowid"
+        row = db.execute(f"""
             SELECT c.*, s.course, s.started_at, s.timezone,
                 (SELECT COUNT(*) FROM class_chunks prior
-                 WHERE prior.session_id=c.session_id AND prior.rowid<=c.rowid) AS chunk_index
+                 WHERE prior.session_id=c.session_id AND prior.{order}<=c.{order}) AS chunk_index
             FROM class_chunks c JOIN class_sessions s ON s.id=c.session_id
-            WHERE c.status='pending' AND c.retry_at <= ? ORDER BY c.retry_at, c.rowid LIMIT 1
+            WHERE c.status='pending' AND c.retry_at <= ? ORDER BY c.retry_at, c.{order} LIMIT 1
         """, (time.time(),)).fetchone()
         if not row:
             return None
@@ -246,8 +248,8 @@ def complete_chunk(chunk, result, activities):
         """, (json.dumps(result, ensure_ascii=False), chunk["id"]))
         for index, activity in enumerate(activities):
             db.execute("""
-                INSERT OR IGNORE INTO class_suggestions(id, session_id, chunk_id, payload)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO class_suggestions(id, session_id, chunk_id, payload)
+                VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING
             """, (f"{chunk['id']}-{index}", chunk["session_id"], chunk["id"],
                   json.dumps(activity, ensure_ascii=False)))
 
@@ -270,20 +272,21 @@ def retry_failed(session_id):
 
 
 def review_session(session_id, after):
+    order = "created_order" if storage_database.uses_postgres() else "rowid"
     with connection() as db:
         segments = db.execute("""
             SELECT id AS sequence, text, timestamp FROM class_segments
             WHERE session_id=? AND id>? ORDER BY id LIMIT 500
         """, (session_id, after)).fetchall()
-        chunks = db.execute("""
-            SELECT id, status, result, error FROM class_chunks WHERE session_id=? ORDER BY rowid
+        chunks = db.execute(f"""
+            SELECT id, status, result, error FROM class_chunks WHERE session_id=? ORDER BY {order}
         """, (session_id,)).fetchall()
-        suggestions = db.execute("""
-            SELECT * FROM class_suggestions WHERE session_id=? ORDER BY rowid
+        suggestions = db.execute(f"""
+            SELECT * FROM class_suggestions WHERE session_id=? ORDER BY {order}
         """, (session_id,)).fetchall()
-        workflows = db.execute("""
+        workflows = db.execute(f"""
             SELECT w.* FROM class_workflows w JOIN class_suggestions s ON w.suggestion_id=s.id
-            WHERE s.session_id=? ORDER BY w.rowid
+            WHERE s.session_id=? ORDER BY w.{order}
         """, (session_id,)).fetchall()
     return {
         "segments": [dict(row) for row in segments],
@@ -307,13 +310,14 @@ def get_suggestion(session_id, suggestion_id):
 
 
 def decide(suggestion_id, decision, review=None, retry=False):
+    order = "created_order" if storage_database.uses_postgres() else "rowid"
     with connection() as db:
-        cursor = db.execute("""
+        cursor = db.execute(f"""
             UPDATE class_suggestions SET decision=?, review=COALESCE(?, review)
             WHERE id=? AND (decision='proposed' OR
-                (? AND decision='prepared' AND
+                (? = 1 AND decision='prepared' AND
                     (SELECT status FROM class_workflows WHERE suggestion_id=?
-                     ORDER BY rowid DESC LIMIT 1) IN ('failed', 'interrupted')))
+                     ORDER BY {order} DESC LIMIT 1) IN ('failed', 'interrupted')))
         """, (decision, json.dumps(review) if review else None, suggestion_id, retry, suggestion_id))
         return cursor.rowcount == 1
 

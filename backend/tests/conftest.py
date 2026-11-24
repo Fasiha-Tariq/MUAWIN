@@ -12,6 +12,7 @@ for p in (str(ROOT_DIR), str(BACKEND_DIR)):
         sys.path.insert(0, p)
 
 os.environ.setdefault("GEMINI_API_KEY", "test-dummy-key")
+os.environ["MUAWIN_STORAGE_BACKEND"] = "sqlite"
 
 @pytest.fixture
 def isolated_storage(tmp_path):
