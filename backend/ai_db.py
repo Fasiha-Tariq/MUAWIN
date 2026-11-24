@@ -1059,7 +1059,8 @@ def get_readiness(teacher: str, course: str) -> Dict[str, Any]:
             "outline_ready":bool(outline),
             "timetable_ready":bool(setup.get("timetable_confirmed") or shared_timetable or class_schedule),
             "class_schedule_ready":bool(class_schedule),
-            "folder_ready":bool(setup.get("folder_path") and Path(setup["folder_path"]).is_dir()),
+            "folder_ready":bool(setup.get("folder_path") and
+                                (os.getenv("MUAWIN_CLOUD") == "1" or Path(setup["folder_path"]).is_dir())),
             "expected_weeks":len(progress),
             "completed_weeks":sum(1 for x in progress if x["lecture_completed"]),
             "pending_reminders":sum(1 for x in list_reminders(teacher,course) if x["status"] in ("active","snoozed"))}

@@ -70,6 +70,8 @@ def course_path(teacher, key, column, fallback):
         raise ValueError("Unsupported course path")
     if os.getenv("MUAWIN_CLOUD") != "1":
         return fallback
+    if column != "folder_path" and fallback and Path(fallback).is_file():
+        return fallback
     db = PostgresConnection()
     try:
         row = db.execute(f"SELECT {column} FROM cloud_course_folders WHERE teacher=? AND course_key=?",
