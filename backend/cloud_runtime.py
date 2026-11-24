@@ -144,6 +144,13 @@ class DurableState(MutableMapping):
                 self._save(key, value)
                 cache[key] = (value, updated)
 
+    def guard_execution(self, key, value):
+        running = {**value, "status": "running"}
+        self._save(key, running)
+        # The endpoint still checks the approved draft. Persist running before it
+        # starts so a killed invocation cannot silently execute the same approval twice.
+        self._cache()[key] = (value, json.dumps(_encode(running), sort_keys=True))
+
 
 def lease(key, owner, *, release=False):
     db = PostgresConnection()
@@ -179,6 +186,11 @@ def reopen_browser(server, workflow, session, combined=False):
             moodle.ensure_edit_mode()
             workflow["automation"] = moodle
             workflow["_assignment_automation"] = assignment
+            assignment_job = workflow["parsed"].get("assignment")
+            if assignment_job:
+                assignment.open_course(str(workflow["course_id"]))
+                assignment.verify_course(assignment_job["course"])
+                assignment.find_week_section(int(assignment_job["week"]))
         else:
             assignment.open_course(str(workflow["course_id"]))
             assignment.verify_course(workflow["draft"]["course"])
@@ -235,6 +247,19 @@ def install(server, course_setup):
                     await asyncio.to_thread(cloud_files.restore, session["username"])
             path = request.url.path
             if path.endswith("/execute") and session:
+                identifier = path.split("/")[-2]
+                for state in stores.values():
+                    if state.kind == "sessions":
+                        continue
+                    value = state.get(identifier)
+                    if value and value.get("status") == "approved":
+                        if value.get("session_token") and value["session_token"] != auth[7:]:
+                            raise HTTPException(403, "Workflow belongs to another session.")
+                        username = value.get("teacher_username") or value.get("username") or value.get("teacher")
+                        if username and username != session["username"]:
+                            raise HTTPException(403, "Workflow belongs to another teacher.")
+                        state.guard_execution(identifier, value)
+                        break
                 for name, combined in (("assignment_workflows", False), ("combined_workflows", True)):
                     workflow = stores[name].get(path.split("/")[-2])
                     if workflow and workflow["status"] == "approved":
@@ -260,11 +285,17 @@ def install(server, course_setup):
         except HTTPException as error:
             return JSONResponse({"detail": error.detail}, status_code=error.status_code)
         finally:
-            if workflow and workflow.get("_assignment_worker"):
-                await server.cleanup_assignment_workflow(workflow)
-            if locked:
-                await asyncio.to_thread(lease, auth, owner, release=True)
-            request_state.reset(context)
+            try:
+                if workflow and workflow.get("_assignment_worker"):
+                    await server.cleanup_assignment_workflow(workflow)
+                for state in stores.values():
+                    await asyncio.to_thread(state.flush)
+            finally:
+                try:
+                    if locked:
+                        await asyncio.to_thread(lease, auth, owner, release=True)
+                finally:
+                    request_state.reset(context)
 
     from . import cloud_files
     cloud_files.install(server)

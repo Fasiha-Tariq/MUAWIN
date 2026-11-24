@@ -618,15 +618,21 @@ export const CourseSetup: React.FC = () => {
               const input = event.currentTarget;
               const files = Array.from(input.files || []);
               if (!files.length || !selectedCourse) return;
-              const form = new FormData();
-              form.append('course_id', selectedCourse.id);
-              files.forEach(file => form.append('files', file));
               setUploading(true);
               try {
-                const { data } = await api.postForm<{files: string[]; folder_path: string}>('/materials/upload', form);
-                setSavedFolderPath(data.folder_path);
-                setFolderPath(data.folder_path);
-                setMessage('Uploaded ' + data.files.join(', '));
+                for (const file of files) {
+                  if (!file.size || file.size > 50 * 1024 * 1024) throw new Error('Choose files between 1 byte and 50 MB.');
+                  const request = { course_id: selectedCourse.id, file_name: file.name };
+                  const { data: upload } = await api.post<{ object_key: string; upload_url: string }>('/materials/upload-url', request);
+                  const response = await fetch(upload.upload_url, { method: 'PUT', body: file,
+                    headers: { 'Content-Type': file.type || 'application/octet-stream' } });
+                  if (!response.ok) throw new Error('Upload failed for ' + file.name);
+                  const { data } = await api.post<{folder_path: string}>('/materials/confirm',
+                    { ...request, object_key: upload.object_key });
+                  setSavedFolderPath(data.folder_path);
+                  setFolderPath(data.folder_path);
+                }
+                setMessage('Uploaded ' + files.map(file => file.name).join(', '));
               } catch (error) {
                 setMessage(error instanceof Error ? error.message : 'Upload failed.');
               } finally {

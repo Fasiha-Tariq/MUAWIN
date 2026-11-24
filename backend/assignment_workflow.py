@@ -802,7 +802,12 @@ def make_assignment_pdf(draft: Dict) -> Path:
 
     PDF_DIR.mkdir(parents=True, exist_ok=True)
     slug = re.sub(r"[^A-Za-z0-9]+", "_", draft["title"]).strip("_") or "assignment"
-    path = PDF_DIR / f"{slug}.pdf"
+    directory = PDF_DIR
+    if os.getenv("MUAWIN_CLOUD") == "1":
+        from uuid import uuid4
+        directory = PDF_DIR / draft.setdefault("_cloud_file_id", uuid4().hex)
+        directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{slug}.pdf"
 
     esc = lambda s: html_lib.escape(_pdf_safe(str(s)))
     base = getSampleStyleSheet()

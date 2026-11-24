@@ -23,4 +23,5 @@ REVOKE ALL ON cloud_state, cloud_leases, cloud_files FROM anon, authenticated;
 REVOKE ALL ON cloud_course_folders FROM anon, authenticated;
 GRANT SELECT,INSERT,UPDATE,DELETE ON cloud_state, cloud_leases, cloud_files TO muawin_backend;
 GRANT SELECT,INSERT,UPDATE,DELETE ON cloud_course_folders TO muawin_backend;
+ALTER TABLE class_suggestions ADD COLUMN IF NOT EXISTS preparing_until DOUBLE PRECISION DEFAULT 0;
 COMMIT;

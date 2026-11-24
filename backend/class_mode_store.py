@@ -202,6 +202,16 @@ def end_scheduled():
 
 def recover_processing():
     with connection() as db:
+        if os.getenv("MUAWIN_CLOUD") == "1":
+            db.execute("""
+                UPDATE class_chunks SET status='pending'
+                WHERE status='processing' AND retry_at<=?
+            """, (time.time(),))
+            db.execute("""
+                UPDATE class_suggestions SET decision='proposed'
+                WHERE decision='preparing' AND preparing_until<=?
+            """, (time.time(),))
+            return
         db.execute("UPDATE class_chunks SET status='pending' WHERE status='processing'")
         db.execute("UPDATE class_suggestions SET decision='proposed' WHERE decision='preparing'")
         db.execute("""
@@ -223,7 +233,8 @@ def claim_chunk():
         """, (time.time(),)).fetchone()
         if not row:
             return None
-        db.execute("UPDATE class_chunks SET status='processing' WHERE id=?", (row["id"],))
+        db.execute("UPDATE class_chunks SET status='processing',retry_at=? WHERE id=?",
+                   (time.time() + 240, row["id"]))
         segments = db.execute("""
             SELECT text, timestamp FROM class_segments WHERE chunk_id=? ORDER BY id
         """, (row["id"],)).fetchall()
@@ -319,6 +330,9 @@ def decide(suggestion_id, decision, review=None, retry=False):
                     (SELECT status FROM class_workflows WHERE suggestion_id=?
                      ORDER BY {order} DESC LIMIT 1) IN ('failed', 'interrupted')))
         """, (decision, json.dumps(review) if review else None, suggestion_id, retry, suggestion_id))
+        if cursor.rowcount and decision == "preparing" and os.getenv("MUAWIN_CLOUD") == "1":
+            db.execute("UPDATE class_suggestions SET preparing_until=? WHERE id=?",
+                       (time.time() + 300, suggestion_id))
         return cursor.rowcount == 1
 
 
