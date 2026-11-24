@@ -62,13 +62,21 @@ def save_file(teacher, path):
 
 
 def course_folder(teacher, key, fallback):
+    return course_path(teacher, key, "folder_path", fallback)
+
+
+def course_path(teacher, key, column, fallback):
+    if column not in {"folder_path", "outline_file_path", "timetable_file_path"}:
+        raise ValueError("Unsupported course path")
     if os.getenv("MUAWIN_CLOUD") != "1":
         return fallback
     db = PostgresConnection()
     try:
-        row = db.execute("SELECT folder_path FROM cloud_course_folders WHERE teacher=? AND course_key=?",
+        row = db.execute(f"SELECT {column} FROM cloud_course_folders WHERE teacher=? AND course_key=?",
                          (teacher, key)).fetchone()
-        return row["folder_path"] if row else None
+        if row and row[column]:
+            return row[column]
+        return fallback if column != "folder_path" and fallback and Path(fallback).is_file() else None
     finally:
         db.close()
 
@@ -173,7 +181,7 @@ def install(server):
                         checksum=excluded.checksum
                 """, (teacher["username"], relative, key, checksum))
                 db.execute("""
-                    INSERT INTO cloud_course_folders VALUES(?,?,?)
+                    INSERT INTO cloud_course_folders(teacher,course_key,folder_path) VALUES(?,?,?)
                     ON CONFLICT(teacher,course_key) DO UPDATE SET folder_path=excluded.folder_path
                 """, (teacher["username"], ai_db.course_key(course["name"]), str(folder)))
         finally:

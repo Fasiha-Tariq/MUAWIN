@@ -212,7 +212,7 @@ def recover_processing():
                 WHERE decision='preparing' AND preparing_until<=?
             """, (time.time(),))
             return
-        db.execute("UPDATE class_chunks SET status='pending' WHERE status='processing'")
+        db.execute("UPDATE class_chunks SET status='pending',retry_at=0 WHERE status='processing'")
         db.execute("UPDATE class_suggestions SET decision='proposed' WHERE decision='preparing'")
         db.execute("""
             UPDATE class_workflows SET status='interrupted'
@@ -223,6 +223,9 @@ def recover_processing():
 def claim_chunk():
     with connection() as db:
         db.execute("BEGIN IMMEDIATE")
+        if os.getenv("MUAWIN_CLOUD") == "1":
+            db.execute("UPDATE class_chunks SET status='pending' WHERE status='processing' AND retry_at<=?",
+                       (time.time(),))
         order = "created_order" if storage_database.uses_postgres() else "rowid"
         row = db.execute(f"""
             SELECT c.*, s.course, s.started_at, s.timezone,

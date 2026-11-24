@@ -671,9 +671,12 @@ def get_course_setup(teacher: str, course: str) -> Dict[str, Any]:
                            (teacher.strip(),course_key(course))).fetchone()
         if not row: return {"course":course,"folder_path":None,"timetable":None,"timetable_confirmed":False,"outline_confirmed":False,"semester_started_at":None,"setup_completed":False,"outline_status_ready":False,"schedule_status_ready":False}
         folder = row["folder_path"]
+        outline_path, timetable_path = row["outline_file_path"], row["timetable_file_path"]
         if os.getenv("MUAWIN_CLOUD") == "1":
-            from .cloud_files import course_folder
+            from .cloud_files import course_folder, course_path
             folder = course_folder(teacher, course_key(course), folder)
+            outline_path = course_path(teacher, course_key(course), "outline_file_path", outline_path)
+            timetable_path = course_path(teacher, course_key(course), "timetable_file_path", timetable_path)
         return {"course":row["course"],"folder_path":folder,
                 "setup_completed":bool(row["setup_completed"]),
                 "outline_status_ready":bool(row["outline_status_ready"]),
@@ -682,7 +685,7 @@ def get_course_setup(teacher: str, course: str) -> Dict[str, Any]:
                 "timetable_confirmed":bool(row["timetable_confirmed"]),
                 "outline_confirmed":bool(row["outline_confirmed"]),
                 "semester_started_at":row["semester_started_at"],
-                "outline_file_path":row["outline_file_path"],"timetable_file_path":row["timetable_file_path"],"updated_at":row["updated_at"]}
+                "outline_file_path":outline_path,"timetable_file_path":timetable_path,"updated_at":row["updated_at"]}
     except Exception as exc:
         print(f"[AI-DB] get_course_setup failed: {exc}")
         return {"course":course,"folder_path":None,"timetable":None,"timetable_confirmed":False}

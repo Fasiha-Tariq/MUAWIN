@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS cloud_course_folders (
     teacher TEXT NOT NULL, course_key TEXT NOT NULL, folder_path TEXT NOT NULL,
     PRIMARY KEY(teacher, course_key)
 );
+ALTER TABLE cloud_course_folders ADD COLUMN IF NOT EXISTS outline_file_path TEXT;
+ALTER TABLE cloud_course_folders ADD COLUMN IF NOT EXISTS timetable_file_path TEXT;
 ALTER TABLE cloud_state ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cloud_leases ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cloud_files ENABLE ROW LEVEL SECURITY;

@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 
 from backend.cloud_runtime import DurableState, _decode, _encode, lease, request_state
+from backend.storage_database import PostgresConnection
 
 
 def test_workflow_serialization_preserves_dates_and_skips_browser_resources():
@@ -56,3 +57,16 @@ def test_expired_teacher_session_cannot_be_restored(monkeypatch):
         assert state.get(key) is None
     finally:
         del state[key]
+
+
+@pytest.mark.skipif(os.getenv("MUAWIN_TEST_POSTGRES") != "1", reason="Live PostgreSQL checks are opt-in")
+def test_backend_role_is_restored_after_each_transaction():
+    db = PostgresConnection()
+    try:
+        for _ in range(2):
+            assert db.execute("SELECT current_user AS role").fetchone()["role"] == "service_role"
+            db.commit()
+        db.rollback()
+        assert db.execute("SELECT current_user AS role").fetchone()["role"] == "service_role"
+    finally:
+        db.close()

@@ -34,6 +34,7 @@ class PostgresConnection:
         self.raw.execute("SET LOCAL ROLE service_role")
 
     def execute(self, query, parameters=()):
+        self._ensure_role()
         if query.strip().upper() == "BEGIN IMMEDIATE":
             # Match the serialization existing Class Mode transactions rely on.
             return self.raw.execute("SELECT pg_advisory_xact_lock(68204117)")
@@ -48,8 +49,15 @@ class PostgresConnection:
                       "%s" if match.group() == "?" else match.group(), query)
 
     def executemany(self, query, parameters):
+        self._ensure_role()
         with self.raw.cursor() as cursor:
             cursor.executemany(self._parameters(query), parameters)
+
+    def _ensure_role(self):
+        from psycopg.pq import TransactionStatus
+
+        if self.raw.driver_connection.info.transaction_status == TransactionStatus.IDLE:
+            self.raw.execute("SET LOCAL ROLE service_role")
 
     def columns(self, table):
         rows = self.execute("""
