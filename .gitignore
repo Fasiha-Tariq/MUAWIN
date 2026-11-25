@@ -4,4 +4,12 @@
 node_modules/
 venv/
 .venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+frontend/test-results/
+frontend/playwright-report/
+*.tsbuildinfo
 backend/data/class_mode.sqlite3*

@@ -15,7 +15,6 @@ backend/data
 backend/logs
 backend/outlines/uploaded
 backend/tests
-backend/test_database.py
 backend/*.pdf
 backend/*.pptx
 *_files

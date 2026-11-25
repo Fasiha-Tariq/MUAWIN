@@ -1,6 +1,0 @@
-{
-  "name": "MUAWIN — From Intent to Action",
-  "description": "Agentic AI-based workflow automation system for Riphah Moellim, empowering academic instructors with supervised workflow orchestration.",
-  "requestFramePermissions": ["microphone"],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}
